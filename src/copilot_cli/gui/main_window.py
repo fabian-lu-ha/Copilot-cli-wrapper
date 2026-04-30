@@ -169,21 +169,55 @@ class MainWindow(QMainWindow):
         self.sidebar.refresh_sessions(session_id)
 
     def _on_model_picker(self) -> None:
-        async def pick():
-            assert self.backend is not None
-            models = await self.backend.list_models()
-            if not models:
-                QMessageBox.information(self, "Models", "Could not auto-discover models from the page.")
+        # Split async (Playwright list_models) from sync (Qt modal dialog).
+        # Calling QInputDialog.getItem inside an async coro deadlocks
+        # qasync: the modal spins Qt's event loop, which tries to drive
+        # another asyncio task (Playwright's connection.run), and asyncio
+        # rejects nested task entry with
+        #   RuntimeError: Cannot enter into task ... while another task
+        #   ... is being executed.
+        # Resolve the futures with add_done_callback and run all Qt UI
+        # interactions in plain sync callbacks instead.
+        if self.backend is None:
+            return
+
+        def show_picker(fut):
+            try:
+                models = fut.result()
+            except Exception as e:
+                QMessageBox.warning(self, "Models", f"Could not list models: {e}")
                 return
-            choice, ok = QInputDialog.getItem(self, "Pick model", "Model:", models, 0, False)
-            if ok and choice:
-                applied = await self.backend.set_model(choice)
+            if not models:
+                QMessageBox.information(
+                    self, "Models",
+                    "Could not auto-discover models from the page.",
+                )
+                return
+            choice, accepted = QInputDialog.getItem(
+                self, "Pick model", "Model:", models, 0, False,
+            )
+            if not (accepted and choice):
+                return
+            apply_fut = asyncio.ensure_future(self.backend.set_model(choice))
+
+            def on_applied(f):
+                try:
+                    applied = f.result()
+                except Exception as e:
+                    QMessageBox.warning(self, "Models", f"set_model failed: {e}")
+                    return
                 if applied:
                     self.settings.model = choice
                     self.sidebar.set_model(choice)
                 else:
-                    QMessageBox.warning(self, "Models", f"Could not switch to {choice!r}.")
-        asyncio.ensure_future(pick())
+                    QMessageBox.warning(
+                        self, "Models", f"Could not switch to {choice!r}.",
+                    )
+
+            apply_fut.add_done_callback(on_applied)
+
+        list_fut = asyncio.ensure_future(self.backend.list_models())
+        list_fut.add_done_callback(show_picker)
 
     def _on_autopilot_toggled(self, checked: bool) -> None:
         if self.runner:
