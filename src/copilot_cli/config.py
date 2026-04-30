@@ -67,6 +67,18 @@ class Settings:
     workdir: Path = field(default_factory=Path.cwd)
     selectors: Selectors = field(default_factory=Selectors.load)
 
+    # Model selection. None = use whatever the UI default is.
+    # The Playwright backend discovers available models from the page on
+    # startup; the user picks one with --model or /model.
+    model: str | None = None
+
+    # Approximate context budget for the chosen M365 Copilot model. BizChat
+    # currently exposes ~128K tokens for GPT-5 family in 2026, but practical
+    # quality drops well before that; we warn at 80% and offer /compact.
+    context_window_tokens: int = 128_000
+    context_warn_ratio: float = 0.80
+    context_auto_compact_ratio: float = 0.92
+
     @classmethod
     def from_env(cls) -> "Settings":
         s = cls()
@@ -74,4 +86,6 @@ class Settings:
             s.headless = True
         if d := os.environ.get("COPILOT_CLI_PROFILE_DIR"):
             s.profile_dir = Path(d)
+        if m := os.environ.get("COPILOT_CLI_MODEL"):
+            s.model = m
         return s

@@ -29,7 +29,7 @@ def _pick_shell() -> tuple[str, list[str]]:
 
 async def _run_bash(workdir: Path, args: dict) -> str:
     cmd = args["command"]
-    timeout = float(args.get("timeout_seconds", 60))
+    timeout = float(args.get("timeout_seconds", 120))
     lower = cmd.lower()
     for needle in DENYLIST_SUBSTRINGS:
         if needle in lower:

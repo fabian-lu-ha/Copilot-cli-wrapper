@@ -25,6 +25,8 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--autopilot", action="store_true", help="Auto-approve every tool call. Risky.")
     p.add_argument("--resume", metavar="SESSION_ID", help="Resume a prior session by id.")
     p.add_argument("--workdir", help="Working directory for tool calls. Defaults to cwd.")
+    p.add_argument("--model", help="Model to select in M365 Copilot (e.g. 'GPT-5.4 Thinking').")
+    p.add_argument("--list-models", action="store_true", help="Print discovered models and exit.")
     p.add_argument("-p", "--prompt", help="One-shot prompt; exit when done.")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -43,6 +45,8 @@ async def _run(args) -> int:
     if args.workdir:
         from pathlib import Path
         settings.workdir = Path(args.workdir).resolve()
+    if args.model:
+        settings.model = args.model
 
     registry = ToolRegistry()
     register_fs_tools(registry, settings.workdir)
@@ -62,6 +66,24 @@ async def _run(args) -> int:
     console.print("[dim]launching Edge … first run will require interactive sign-in")
     await backend.start()
     console.print("[green]signed in. ready.[/]")
+
+    if args.list_models:
+        models = await backend.list_models()
+        if models:
+            console.print("Discovered models:")
+            for m in models:
+                console.print(f"  - {m}")
+        else:
+            console.print("[yellow]could not auto-discover models from the page UI[/]")
+        await backend.stop()
+        return 0
+
+    if settings.model:
+        ok = await backend.set_model(settings.model)
+        if ok:
+            console.print(f"[dim]model set to: {settings.model}")
+        else:
+            console.print(f"[yellow]could not set model {settings.model!r}; using UI default[/]")
 
     loop = AgentLoop(backend, registry, settings, transcript, perms, console)
 
@@ -90,8 +112,39 @@ async def _run(args) -> int:
                 perm_state.autopilot = not perm_state.autopilot
                 console.print(f"[dim]autopilot = {perm_state.autopilot}")
                 continue
+            if line == "/models":
+                models = await backend.list_models()
+                if models:
+                    for i, m in enumerate(models):
+                        console.print(f"  {i}: {m}")
+                else:
+                    console.print("[yellow]could not discover models[/]")
+                continue
+            if line.startswith("/model "):
+                target = line[len("/model "):].strip()
+                ok = await backend.set_model(target)
+                console.print(f"[dim]set_model({target!r}) -> {ok}")
+                if ok:
+                    settings.model = target
+                continue
+            if line == "/context":
+                used = transcript.estimated_tokens()
+                ratio = used / settings.context_window_tokens
+                console.print(f"context: {used:,}/{settings.context_window_tokens:,} ({ratio*100:.1f}%)")
+                continue
+            if line == "/compact":
+                await loop.compact()
+                continue
             if line == "/help":
-                console.print("/new  reset upstream chat\n/yolo toggle autopilot\n/exit quit")
+                console.print(
+                    "/new       reset upstream chat\n"
+                    "/yolo      toggle autopilot\n"
+                    "/models    list discovered models\n"
+                    "/model X   pick model X (substring match)\n"
+                    "/context   show token usage\n"
+                    "/compact   summarize older transcript\n"
+                    "/exit      quit"
+                )
                 continue
             await loop.run_user_turn(line)
         return 0

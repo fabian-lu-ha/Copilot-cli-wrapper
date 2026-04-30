@@ -20,6 +20,13 @@ log = logging.getLogger(__name__)
 
 SUBSTRATE_HOSTS = ("substrate.office.com", "cloud.microsoft", "office.com")
 
+# Heuristic regex for the model picker button's accessible name. M365 Copilot
+# doesn't publish stable testid/aria-label values for it; the button label is
+# usually the active model name. Per the April 2026 Copilot update, common
+# names include "GPT-5.x Quick", "GPT-5.x Thinking", "Auto", "Smart",
+# "Researcher", "Claude Sonnet 4.5" (when tenant enables Anthropic).
+MODEL_BUTTON_NAME_RE = re.compile(r"(GPT-|Think|Quick|Smart|Auto|Claude|Researcher|Reasoning)", re.I)
+
 
 class PlaywrightBackend(CopilotBackend):
     """Drives the M365 Copilot web UI via a persistent Edge profile.
@@ -129,6 +136,65 @@ class PlaywrightBackend(CopilotBackend):
                     self._network_idle_event.set()
             except Exception:
                 pass
+
+    async def list_models(self) -> list[str]:
+        """Heuristic discovery: open the model dropdown, scrape listbox options.
+
+        Selectors aren't stable, so we look for any button with an
+        accessible name matching MODEL_BUTTON_NAME_RE, click it, then read
+        elements with role=option / role=menuitem from the popup.
+        """
+        if self._page is None:
+            return []
+        page = self._page
+        try:
+            btn = page.get_by_role("button").filter(has_text=MODEL_BUTTON_NAME_RE).first
+            if await btn.count() == 0:
+                return []
+            await btn.click(timeout=3000)
+            options = page.get_by_role("option")
+            if await options.count() == 0:
+                options = page.get_by_role("menuitem")
+            names: list[str] = []
+            for i in range(await options.count()):
+                t = (await options.nth(i).inner_text()).strip()
+                if t and t not in names:
+                    names.append(t)
+            # Close the popup.
+            await page.keyboard.press("Escape")
+            return names
+        except Exception as e:
+            log.debug("model discovery failed: %s", e)
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return []
+
+    async def set_model(self, name: str) -> bool:
+        if self._page is None:
+            return False
+        page = self._page
+        try:
+            btn = page.get_by_role("button").filter(has_text=MODEL_BUTTON_NAME_RE).first
+            if await btn.count() == 0:
+                return False
+            await btn.click(timeout=3000)
+            options = page.get_by_role("option").filter(has_text=re.compile(re.escape(name), re.I))
+            if await options.count() == 0:
+                options = page.get_by_role("menuitem").filter(has_text=re.compile(re.escape(name), re.I))
+            if await options.count() == 0:
+                await page.keyboard.press("Escape")
+                return False
+            await options.first.click(timeout=3000)
+            return True
+        except Exception as e:
+            log.debug("set_model(%s) failed: %s", name, e)
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return False
 
     async def _wait_for_signin(self) -> None:
         assert self._page

@@ -28,6 +28,14 @@ class CopilotBackend(ABC):
     async def send(self, prompt: str) -> AsyncIterator[str]:
         """Send a single prompt; yield response chunks as they arrive."""
 
+    async def list_models(self) -> list[str]:
+        """Return models the backend exposes. Empty list means unknown."""
+        return []
+
+    async def set_model(self, name: str) -> bool:
+        """Best-effort switch to the named model. Returns True on success."""
+        return False
+
     async def __aenter__(self):
         await self.start()
         return self

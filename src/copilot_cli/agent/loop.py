@@ -17,6 +17,13 @@ log = logging.getLogger(__name__)
 
 MAX_STEPS_PER_TURN = 25
 
+COMPACT_REQUEST = (
+    "Summarize the conversation so far in 8-15 bullet points. Cover: the user's "
+    "overall goal, key decisions made, files read or edited (with paths), and "
+    "current state of any in-progress task. Reply with ONLY the summary text, "
+    "no preamble. Do not call any tool."
+)
+
 
 class AgentLoop:
     def __init__(
@@ -40,6 +47,7 @@ class AgentLoop:
 
     async def run_user_turn(self, user_input: str) -> str:
         self.transcript.add("user", user_input)
+        await self._maybe_auto_compact()
         # Reset upstream once per user turn and prime with the full transcript
         # (system prompt + all prior turns + this user message). Subsequent
         # tool-result steps within the same turn are sent as follow-up
@@ -109,3 +117,26 @@ class AgentLoop:
     def _snippet(s: str, n: int = 120) -> str:
         s = s.replace("\n", " ")
         return s if len(s) <= n else s[:n] + "..."
+
+    async def _maybe_auto_compact(self) -> None:
+        used = self.transcript.estimated_tokens()
+        budget = self.settings.context_window_tokens
+        ratio = used / budget if budget else 0
+        if ratio >= self.settings.context_warn_ratio:
+            self.console.print(
+                f"[yellow]context: {used:,}/{budget:,} tokens "
+                f"({ratio*100:.0f}%)[/]"
+            )
+        if ratio >= self.settings.context_auto_compact_ratio:
+            self.console.print("[yellow]auto-compacting transcript…[/]")
+            await self.compact()
+
+    async def compact(self) -> None:
+        """Ask the backend itself to summarize, then collapse the transcript."""
+        await self.backend.new_conversation()
+        prompt = self.transcript.render_for_upstream() + "\n\nUser: " + COMPACT_REQUEST
+        summary = ""
+        async for chunk in self.backend.send(prompt):
+            summary += chunk
+        new_tokens = self.transcript.compact(summary.strip(), keep_last_turns=4)
+        self.console.print(f"[green]compacted to {new_tokens:,} tokens[/]")

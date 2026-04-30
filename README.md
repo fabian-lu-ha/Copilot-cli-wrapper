@@ -33,7 +33,9 @@ toggle, Conditional Access) applies automatically.
   (`<tool_use><name>…</name><args>{…}</args></tool_use>`), one tool per turn,
   stream parser detects the closing tag and stops generation early.
 * **Edits**: Aider-style `<<<<<<< SEARCH / ======= / >>>>>>> REPLACE` blocks.
-* **Tools**: `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `run_bash`.
+* **Tools**: `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `glob`, `run_bash`. `read_file` matches Claude Code's behaviour: `cat -n` formatted output, 2000-line default, 2000-char-per-line truncation, 256 KB hard size gate, 25k-token output cap, 1-indexed `offset`. `run_bash` defaults to a 120 s timeout and 50 KB output cap.
+* **Model selection**: M365 Copilot exposes a model picker (GPT-5.x Quick / Thinking / Auto / sometimes Claude). The CLI auto-discovers it on the page (no hard-coded selectors — uses an accessible-name heuristic). Pick with `--model "GPT-5.4 Thinking"` or the `/model X` REPL command; list options with `--list-models` or `/models`.
+* **Context window**: tracked locally with `tiktoken` (`o200k_base`, the GPT-4o/5 encoding) — falls back to a 4-chars/token heuristic if `tiktoken` isn't installed. Default budget is 128 K tokens (BizChat's current cap for GPT-5 family). Warns at 80 %, auto-compacts at 92 %. `/compact` triggers it manually, `/context` shows current usage.
 * **Permissions**: read/list/grep run silently; write/edit/bash prompt with
   `[once] [session] [prefix-allow (bash)] [no]`. `--autopilot` skips prompts.
 * **Sessions**: every turn appended to `<datadir>/sessions/<id>.jsonl`; resume
@@ -61,20 +63,30 @@ walker — fine for small repos, slow on big ones. Install via
 ## Run
 
 ```powershell
-copilot                          # interactive REPL
-copilot -p "explain this repo"   # one-shot
-copilot --autopilot              # auto-approve every tool call (risky)
-copilot --resume <session-id>    # continue a prior session
+copilot                                      # interactive REPL
+copilot -p "explain this repo"               # one-shot
+copilot --list-models                        # discover models in the UI and exit
+copilot --model "GPT-5.4 Thinking"           # pick a model on startup
+copilot --autopilot                          # auto-approve every tool call (risky)
+copilot --resume <session-id>                # continue a prior session
 ```
 
 REPL commands:
 
-| command | effect |
-| --- | --- |
-| `/new`  | reset the upstream Copilot conversation (keeps local transcript) |
-| `/yolo` | toggle autopilot |
-| `/help` | list commands |
-| `/exit` | quit |
+| command           | effect |
+| ---               | --- |
+| `/new`            | reset the upstream Copilot conversation (keeps local transcript) |
+| `/yolo`           | toggle autopilot |
+| `/models`         | list discovered models |
+| `/model <name>`   | switch model (substring match, case-insensitive) |
+| `/context`        | show token usage vs. budget |
+| `/compact`        | summarize older turns to free context |
+| `/help`           | list commands |
+| `/exit`           | quit |
+
+For better token counting accuracy, install tiktoken: `pip install tiktoken`
+(it's not a hard dependency because some corporate networks block its model
+download; without it the CLI uses a chars/4 heuristic).
 
 ## First-run sign-in
 

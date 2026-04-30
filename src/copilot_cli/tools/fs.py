@@ -1,4 +1,13 @@
-"""Filesystem tools: read_file, write_file, edit_file, list_dir, grep."""
+"""Filesystem tools: read_file, write_file, edit_file, list_dir, grep, glob.
+
+Read tool mirrors Claude Code's behaviour:
+  - default 2000 lines
+  - 2000-char-per-line truncation
+  - cat -n style output (spaces + 1-indexed number + tab + content)
+  - 256 KB size gate
+  - 25k token output cap
+  - 1-indexed offset
+"""
 from __future__ import annotations
 
 import re
@@ -6,14 +15,18 @@ import subprocess
 from pathlib import Path
 from typing import Tuple
 
+from copilot_cli.tokenizer import count_tokens
 from copilot_cli.tools.registry import Tool, ToolRegistry
 
-MAX_READ_BYTES = 200_000
+# Claude Code Read tool defaults (see docs research):
+DEFAULT_READ_LIMIT = 2000
+MAX_LINE_CHARS = 2000
+READ_SIZE_GATE_BYTES = 256 * 1024
+READ_TOKEN_CAP = 25_000
 
 
 def _resolve(workdir: Path, p: str) -> Path:
     candidate = (workdir / p).resolve() if not Path(p).is_absolute() else Path(p).resolve()
-    # Jail to workdir.
     try:
         candidate.relative_to(workdir.resolve())
     except ValueError:
@@ -21,23 +34,57 @@ def _resolve(workdir: Path, p: str) -> Path:
     return candidate
 
 
+def _format_with_line_numbers(lines: list[str], start_lineno: int) -> str:
+    """cat -n format: '%6d\\t%s'. start_lineno is 1-indexed."""
+    out = []
+    for i, line in enumerate(lines):
+        if len(line) > MAX_LINE_CHARS:
+            line = line[:MAX_LINE_CHARS] + " ... [truncated]"
+        out.append(f"{start_lineno + i:6d}\t{line}")
+    return "\n".join(out)
+
+
 async def _read_file(workdir: Path, args: dict) -> str:
     path = _resolve(workdir, args["path"])
     if not path.exists():
         return f"ERROR: file not found: {path}"
-    data = path.read_bytes()
-    if len(data) > MAX_READ_BYTES:
+    if path.is_dir():
+        return f"ERROR: {path} is a directory; use list_dir."
+    size = path.stat().st_size
+    if size > READ_SIZE_GATE_BYTES:
         return (
-            f"ERROR: file is {len(data)} bytes (>{MAX_READ_BYTES}). "
-            "Read a slice with offset/limit instead, or use grep."
+            f"ERROR: file is {size} bytes (>{READ_SIZE_GATE_BYTES}). "
+            "Read a slice with offset/limit or use grep to find the section first."
         )
-    text = data.decode("utf-8", errors="replace")
-    if "offset" in args or "limit" in args:
-        lines = text.splitlines()
-        offset = int(args.get("offset", 0))
-        limit = int(args.get("limit", len(lines)))
-        text = "\n".join(lines[offset: offset + limit])
-    return text
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    all_lines = text.splitlines()
+
+    offset = max(1, int(args.get("offset", 1)))  # 1-indexed
+    limit = int(args.get("limit", DEFAULT_READ_LIMIT))
+
+    if offset > len(all_lines):
+        return f"(offset {offset} is past end of file; file has {len(all_lines)} lines)"
+
+    sliced = all_lines[offset - 1: offset - 1 + limit]
+    rendered = _format_with_line_numbers(sliced, offset)
+
+    # Token cap: trim from the bottom if over.
+    if count_tokens(rendered) > READ_TOKEN_CAP:
+        kept: list[str] = []
+        running_tokens = 0
+        for line in rendered.split("\n"):
+            t = count_tokens(line + "\n")
+            if running_tokens + t > READ_TOKEN_CAP:
+                break
+            kept.append(line)
+            running_tokens += t
+        rendered = "\n".join(kept) + "\n... [truncated to fit token budget; read more with offset]"
+
+    end_line = offset + len(sliced) - 1
+    if end_line < len(all_lines):
+        rendered += f"\n\n[showing lines {offset}-{end_line} of {len(all_lines)}; pass offset to read more]"
+    return rendered
 
 
 async def _write_file(workdir: Path, args: dict) -> str:
@@ -106,7 +153,6 @@ async def _grep(workdir: Path, args: dict) -> str:
     pattern = args["pattern"]
     path = args.get("path", ".")
     target = _resolve(workdir, path)
-    # Prefer ripgrep if available, else Python re-walk.
     try:
         rg = subprocess.run(
             ["rg", "--no-heading", "-n", "--color=never", pattern, str(target)],
@@ -119,7 +165,6 @@ async def _grep(workdir: Path, args: dict) -> str:
             return "(no matches)"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    # Fallback: Python search.
     matches = []
     rx = re.compile(pattern)
     files = [target] if target.is_file() else target.rglob("*")
@@ -139,11 +184,31 @@ async def _grep(workdir: Path, args: dict) -> str:
     return "\n".join(matches) if matches else "(no matches)"
 
 
+async def _glob(workdir: Path, args: dict) -> str:
+    """Glob files matching a pattern, sorted by modification time desc (Claude Code style)."""
+    pattern = args["pattern"]
+    base = _resolve(workdir, args.get("path", "."))
+    if not base.is_dir():
+        return f"ERROR: {base} is not a directory"
+    matches = sorted(
+        (p for p in base.glob(pattern) if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not matches:
+        return "(no matches)"
+    return "\n".join(str(p) for p in matches[:500])
+
+
 def register_fs_tools(registry: ToolRegistry, workdir: Path) -> None:
     registry.register(Tool(
         name="read_file",
-        description="Read a UTF-8 text file. Optional offset/limit to read a line range.",
-        args_schema='{"path": str, "offset"?: int, "limit"?: int}',
+        description=(
+            "Read a UTF-8 text file. Returns 'cat -n' formatted output (line numbers + tab + content). "
+            f"Default {DEFAULT_READ_LIMIT} lines; long lines truncated at {MAX_LINE_CHARS} chars; "
+            "256KB hard size gate. offset is 1-indexed."
+        ),
+        args_schema='{"path": str, "offset"?: int (1-indexed), "limit"?: int}',
         handler=lambda a: _read_file(workdir, a),
     ))
     registry.register(Tool(
@@ -173,4 +238,10 @@ def register_fs_tools(registry: ToolRegistry, workdir: Path) -> None:
         description="Search files for a regex pattern (uses ripgrep if available).",
         args_schema='{"pattern": str, "path"?: str}',
         handler=lambda a: _grep(workdir, a),
+    ))
+    registry.register(Tool(
+        name="glob",
+        description="Find files matching a glob pattern, sorted by mtime descending.",
+        args_schema='{"pattern": str (e.g. **/*.py), "path"?: str}',
+        handler=lambda a: _glob(workdir, a),
     ))
