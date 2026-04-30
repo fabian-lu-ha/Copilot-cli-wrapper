@@ -51,12 +51,15 @@ def find_tenant_wrapper() -> Optional[Path]:
     return None
 
 
-def run(cmd: list[str], **kwargs) -> int:
-    """Run a subprocess, stream output to our stdout/stderr, return rc."""
-    # Use list2cmdline for the displayed form so the user sees properly
-    # quoted paths-with-spaces (Python's subprocess does this internally
-    # before calling CreateProcess on Windows).
-    print(f"  $ {subprocess.list2cmdline(cmd)}")
+def run(cmd, **kwargs) -> int:
+    """Run a subprocess, stream output to our stdout/stderr, return rc.
+    Accepts either a list (passed through to CreateProcess) or a string
+    (passed through cmd.exe /c via shell=True for .bat invocations)."""
+    if isinstance(cmd, str):
+        print(f"  $ {cmd}")
+        kwargs.setdefault("shell", True)
+    else:
+        print(f"  $ {subprocess.list2cmdline(cmd)}")
     try:
         return subprocess.call(cmd, **kwargs)
     except FileNotFoundError as e:
@@ -64,24 +67,41 @@ def run(cmd: list[str], **kwargs) -> int:
         return 127
 
 
+def _cmd_quote(s: str) -> str:
+    """Quote a string for cmd.exe. cmd uses doubled quotes ("") to escape
+    a literal quote inside a quoted string — NOT backslash-escapes (those
+    are bash/MSVCRT-style). subprocess.list2cmdline produces \"-escaped
+    output which is wrong for the cmd /c command line."""
+    if not s:
+        return '""'
+    needs_quote = any(c in s for c in ' \t&|<>^()"')
+    if not needs_quote:
+        return s
+    return '"' + s.replace('"', '""') + '"'
+
+
+def _build_cmd_line(parts: list[str]) -> str:
+    return " ".join(_cmd_quote(p) for p in parts)
+
+
 def pip_install(args: list[str], wrapper: Optional[Path], cwd: Optional[Path] = None) -> int:
     """Either invoke the tenant wrapper with the given args (positional after
     'install', following the existing wrapper convention) or run plain
-    `python -m pip install ...`. Path-with-spaces safe on Windows: bat/cmd
-    wrappers go through cmd.exe with subprocess.list2cmdline-quoted args;
-    everything else uses subprocess.call's list form which CreateProcess
-    quotes for us."""
+    `python -m pip install ...`. Path-with-spaces safe on Windows: .bat/.cmd
+    wrappers go through cmd.exe via shell=True with a hand-quoted command
+    string (cmd uses "" escaping, not \\"), so paths under e.g.
+    'OneDrive - Tenant Name\\...' work correctly.
+    """
     kwargs: dict = {}
     if cwd is not None:
         kwargs["cwd"] = str(cwd)
     if wrapper is not None:
         suf = wrapper.suffix.lower()
         if suf in (".bat", ".cmd") and os.name == "nt":
-            # On Windows, a .bat must be invoked via cmd.exe. Build the
-            # command string via list2cmdline so paths/args with spaces are
-            # quoted correctly, then feed cmd /s /c the whole quoted string.
-            inner = subprocess.list2cmdline([str(wrapper), *args])
-            cmd = ["cmd.exe", "/s", "/c", inner]
+            # Pass a string with cmd-style quoting; subprocess invokes
+            # cmd.exe /c <string> via shell=True.
+            cmd_line = _build_cmd_line([str(wrapper), *args])
+            return run(cmd_line, **kwargs)
         elif suf == ".ps1":
             cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                    "-File", str(wrapper), *args]
