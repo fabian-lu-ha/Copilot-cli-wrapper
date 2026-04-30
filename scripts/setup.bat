@@ -94,11 +94,16 @@ echo.
 REM ---- step 4: PATH --------------------------------------------------
 echo [4/4] Checking 'copilot' command on PATH...
 where copilot >nul 2>&1
-if not errorlevel 1 (
-    for /f "delims=" %%p in ('where copilot') do echo   OK on PATH: %%p
-    goto :done
-)
+if errorlevel 1 goto :detect_scripts_dir
 
+REM 'copilot' is on PATH already - show where and we're done. Avoid the
+REM for/goto-inside-parens pattern (cmd's parser sometimes mishandles it
+REM and exits the whole script silently).
+echo   OK on PATH:
+where copilot
+goto :done
+
+:detect_scripts_dir
 for /f "delims=" %%d in ('python -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2^>nul') do set "SCRIPTS_DIR=%%d"
 if "!SCRIPTS_DIR!" == "" (
     echo   could not detect Python's Scripts dir; skipping PATH update

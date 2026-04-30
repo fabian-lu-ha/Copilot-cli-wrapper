@@ -57,20 +57,26 @@ REM ---- 2. pip -----------------------------------------------------------
 echo.
 echo [2/8] pip...
 python -m pip --version >"%TEMP%\pipver.txt" 2>&1
-if errorlevel 1 (
-    echo   FAIL  pip not available:
-    type "%TEMP%\pipver.txt"
-    set /a FAILS+=1
-    set "FIXES=!FIXES! - run: python -m ensurepip --upgrade\n"
-    del "%TEMP%\pipver.txt" >nul 2>&1
-    goto :summary
-)
-for /f "delims=" %%v in (%TEMP%\pipver.txt) do (
-    echo   OK    %%v
-    goto :pip_done
-)
-:pip_done
+if errorlevel 1 goto :pip_fail
+REM Read the first line of the temp file. set /p with redirection works
+REM regardless of whether %TEMP% contains spaces, unlike `for /f in (file)`
+REM which silently fails on space-containing paths (the original bug that
+REM made doctor.bat stop right after step 2 on some Windows setups).
+set "PIPVER="
+set /p PIPVER=<"%TEMP%\pipver.txt"
+echo   OK    !PIPVER!
 del "%TEMP%\pipver.txt" >nul 2>&1
+goto :pip_done
+
+:pip_fail
+echo   FAIL  pip not available:
+type "%TEMP%\pipver.txt"
+set /a FAILS+=1
+set "FIXES=!FIXES! - run: python -m ensurepip --upgrade\n"
+del "%TEMP%\pipver.txt" >nul 2>&1
+goto :summary
+
+:pip_done
 
 REM ---- 3. SSL / corporate proxy ---------------------------------------
 echo.
@@ -175,7 +181,8 @@ if errorlevel 1 (
     python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(channel='msedge',headless=True); b.close(); p.stop()" >"%TEMP%\pwtest.txt" 2>&1
     if errorlevel 1 (
         echo   WARN  msedge driver shim not available:
-        for /f "delims=" %%l in (%TEMP%\pwtest.txt) do echo         %%l
+        REM type prints the file content directly; works with spaces in %TEMP%.
+        type "%TEMP%\pwtest.txt"
         set /a WARNS+=1
         set "FIXES=!FIXES! - python -m playwright install msedge\n"
     ) else (
