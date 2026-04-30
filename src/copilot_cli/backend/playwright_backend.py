@@ -29,6 +29,100 @@ SUBSTRATE_HOSTS = ("substrate.office.com", "cloud.microsoft", "office.com")
 MODEL_BUTTON_NAME_RE = re.compile(r"(GPT-|Think|Quick|Smart|Auto|Claude|Researcher|Reasoning)", re.I)
 
 
+# Injected before page scripts run. Patches WebSocket.send so that any
+# substrate ChatHub invocation has its `allowedMessageTypes` filtered to
+# drop the entries that cause Copilot to auto-route the response into a
+# Pages / Canvas / side pane. The chat reply then has nowhere to go but
+# the actual chat bubble, which is what we can read.
+#
+# The substrate request payload looks like:
+#   { "arguments": [{
+#       "allowedMessageTypes": ["Chat","SideBySide","RenderCardRequest", ...],
+#       "optionsSets": ["cwc_flux_image", ...],
+#       ...
+#   }], "target": "...", "invocationId": "..." }
+# SignalR may pack multiple JSON records into one frame separated by 0x1E.
+_SIDEBYSIDE_BLOCKER_JS = r"""
+(() => {
+  if (window.__copilotCliPagesBlocker) return;
+  window.__copilotCliPagesBlocker = true;
+  const RS = String.fromCharCode(0x1e);
+  // Message types whose presence enables Copilot to redirect the reply
+  // into a side pane / Pages document. Drop them all.
+  const BLOCKED_TYPES = new Set([
+    "SideBySide",
+    "RenderCardRequest",
+    "GenerateGraphicArt",
+  ]);
+  // Same idea for optionsSets entries that gate the auto-Pages behavior.
+  // Conservative — only drop entries with explicit "page"/"canvas"/"side"
+  // tokens. This list will probably need to grow as Microsoft adds flags.
+  const BLOCKED_OPTION_RE = /(side[_-]?by[_-]?side|sidepane|canvas|pages?)/i;
+
+  const stripRecord = (raw) => {
+    let s = raw;
+    if (!s || s.length === 0) return s;
+    let parsed;
+    try { parsed = JSON.parse(s); } catch (e) { return s; }
+    if (!parsed || !Array.isArray(parsed.arguments)) return s;
+    let mutated = false;
+    parsed.arguments.forEach(a => {
+      if (a && Array.isArray(a.allowedMessageTypes)) {
+        const filtered = a.allowedMessageTypes.filter(t => !BLOCKED_TYPES.has(t));
+        if (filtered.length !== a.allowedMessageTypes.length) {
+          a.allowedMessageTypes = filtered;
+          mutated = true;
+        }
+      }
+      if (a && Array.isArray(a.optionsSets)) {
+        const filtered = a.optionsSets.filter(o => !BLOCKED_OPTION_RE.test(o));
+        if (filtered.length !== a.optionsSets.length) {
+          a.optionsSets = filtered;
+          mutated = true;
+        }
+      }
+    });
+    return mutated ? JSON.stringify(parsed) : s;
+  };
+
+  const transform = (data) => {
+    if (typeof data !== "string") return data;
+    if (data.indexOf("allowedMessageTypes") < 0 && data.indexOf("optionsSets") < 0) {
+      return data;
+    }
+    // SignalR JSON protocol: each record terminated by 0x1E.
+    if (data.includes(RS)) {
+      const out = data.split(RS).map(stripRecord).join(RS);
+      return out;
+    }
+    return stripRecord(data);
+  };
+
+  const origSend = WebSocket.prototype.send;
+  let hookHits = 0;
+  let mutated = 0;
+  WebSocket.prototype.send = function (data) {
+    try {
+      hookHits++;
+      const before = data;
+      data = transform(data);
+      if (typeof before === "string" && typeof data === "string" && before !== data) {
+        mutated++;
+        console.log("[copilot-cli] mutated WS frame #" + mutated + " (" + before.length + "B)");
+      }
+      if (hookHits === 1 || hookHits % 20 === 0) {
+        console.log("[copilot-cli] WS.send hook hits=" + hookHits + " mutated=" + mutated);
+      }
+    } catch (e) {
+      console.warn("[copilot-cli] pages blocker error:", e);
+    }
+    return origSend.call(this, data);
+  };
+  console.log("[copilot-cli] pages blocker installed");
+})();
+"""
+
+
 class PlaywrightBackend(CopilotBackend):
     """Drives the M365 Copilot web UI via a persistent Edge profile.
 
@@ -59,8 +153,22 @@ class PlaywrightBackend(CopilotBackend):
             viewport={"width": 1280, "height": 900},
             args=["--disable-blink-features=AutomationControlled"],
         )
+        # Inject a WebSocket.send hook that strips the SideBySide message
+        # type from outbound substrate invocations. SideBySide is what tells
+        # Copilot's backend "you may route this response into the Pages
+        # side pane" — without it, the frontend cannot trigger auto-Pages
+        # and the reply has to land in the chat. There is no user-facing
+        # toggle for this; intercepting at the WS layer is the only knob.
+        await self._ctx.add_init_script(_SIDEBYSIDE_BLOCKER_JS)
         self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
         self._page.on("response", self._on_response)
+        # Pipe the injected blocker's console output up to our log so we can
+        # tell if it's actually intercepting WS frames.
+        def _on_console(msg):
+            text = msg.text
+            if "[copilot-cli]" in text:
+                log.info("page console: %s", text)
+        self._page.on("console", _on_console)
         # Substrate capture must be wired BEFORE we navigate so we don't miss
         # the initial WebSocket connection.
         self._capture = SubstrateCapture(self._page)
@@ -111,6 +219,19 @@ class PlaywrightBackend(CopilotBackend):
                         closed_any = True
                     except Exception as e:
                         log.debug("discardButton click failed: %s", e)
+            # If the click triggered "Continue without saving?" — accept it.
+            # The dialog uses role="dialog" with a "Continue" button.
+            cont = self._page.locator(
+                '[role="dialog"] button:has-text("Continue"), '
+                '[role="alertdialog"] button:has-text("Continue")'
+            )
+            if await cont.count() > 0:
+                log.debug("dismissing 'Continue without saving?' dialog")
+                try:
+                    await cont.first.click(timeout=1000)
+                    closed_any = True
+                except Exception:
+                    pass
             # Generic fallbacks for older / variant builds.
             for sel in (
                 'button[aria-label*="Close pane" i]',
