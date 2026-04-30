@@ -29,6 +29,13 @@ toggle, Conditional Access) applies automatically.
   against `https://m365.cloud.microsoft/chat`. First run opens a real Edge
   window for interactive sign-in; the dedicated profile dir keeps you signed
   in afterwards.
+* **Streaming**: primary path is direct **WebSocket capture** of the substrate
+  SignalR frames (`wss://substrate.office.com/m365chat/...`) — yields the
+  assistant's text token-by-token as Copilot emits it. If no recognised frame
+  arrives within `ws_first_delta_timeout` (default 4 s) the backend falls back
+  to DOM polling. Frame parser lives in
+  `src/copilot_cli/backend/substrate_capture.py` and is unit-tested without
+  Playwright; if Microsoft changes the schema, that's the file to update.
 * **Tool calling on a non-tool-calling model**: XML tags
   (`<tool_use><name>…</name><args>{…}</args></tool_use>`), one tool per turn,
   stream parser detects the closing tag and stops generation early.

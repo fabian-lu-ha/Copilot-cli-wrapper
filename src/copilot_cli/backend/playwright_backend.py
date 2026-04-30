@@ -14,6 +14,7 @@ from playwright.async_api import (
 )
 
 from copilot_cli.backend.base import CopilotBackend
+from copilot_cli.backend.substrate_capture import SubstrateCapture
 from copilot_cli.config import Settings
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class PlaywrightBackend(CopilotBackend):
         self._ctx: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._network_idle_event = asyncio.Event()
+        self._capture: Optional[SubstrateCapture] = None
 
     async def start(self) -> None:
         self._pw = await async_playwright().start()
@@ -59,6 +61,9 @@ class PlaywrightBackend(CopilotBackend):
         )
         self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
         self._page.on("response", self._on_response)
+        # Substrate capture must be wired BEFORE we navigate so we don't miss
+        # the initial WebSocket connection.
+        self._capture = SubstrateCapture(self._page)
         await self._page.goto(self.settings.selectors.chat_url, wait_until="domcontentloaded")
         await self._wait_for_signin()
 
@@ -77,7 +82,7 @@ class PlaywrightBackend(CopilotBackend):
             await self._page.goto(self.settings.selectors.chat_url, wait_until="domcontentloaded")
 
     async def send(self, prompt: str) -> AsyncIterator[str]:
-        assert self._page
+        assert self._page and self._capture
         page = self._page
         sel = self.settings.selectors
 
@@ -90,11 +95,38 @@ class PlaywrightBackend(CopilotBackend):
         await input_box.type(prompt, delay=4)
 
         self._network_idle_event.clear()
-        send_btn = page.locator(sel.send_button).first
-        await send_btn.click()
+        self._capture.begin_turn()
+        try:
+            send_btn = page.locator(sel.send_button).first
+            await send_btn.click()
 
-        # Wait for a new assistant bubble to appear.
+            # Race: try WebSocket capture first. If a delta arrives within
+            # ws_first_delta_timeout, stream from the WS for the rest of the
+            # turn. Otherwise fall back to DOM polling.
+            first = await self._capture.wait_for_first_delta(
+                timeout=self.settings.ws_first_delta_timeout
+            )
+            if first is not None and first.kind == "delta":
+                log.debug("streaming via WebSocket capture")
+                async for delta in self._capture.stream_deltas(
+                    idle_timeout=self.settings.response_stable_seconds,
+                    hard_timeout=self.settings.response_timeout_seconds,
+                ):
+                    yield delta
+                return
+
+            log.debug("WS capture produced nothing; falling back to DOM polling")
+            async for delta in self._dom_poll_stream(prior_count):
+                yield delta
+        finally:
+            self._capture.end_turn()
+
+    async def _dom_poll_stream(self, prior_count: int) -> AsyncIterator[str]:
+        assert self._page
+        page = self._page
+        sel = self.settings.selectors
         deadline = asyncio.get_event_loop().time() + self.settings.response_timeout_seconds
+
         new_msg = None
         while asyncio.get_event_loop().time() < deadline:
             count = await page.locator(sel.response_messages).count()

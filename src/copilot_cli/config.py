@@ -62,6 +62,10 @@ class Settings:
     profile_dir: Path = field(default_factory=edge_profile_dir)
     response_stable_seconds: float = 2.5
     response_timeout_seconds: float = 180.0
+    # How long to wait for the FIRST WebSocket delta before falling back to
+    # DOM polling. Substrate normally sends within ~1s; if nothing in 4s the
+    # frame schema probably changed (fall back).
+    ws_first_delta_timeout: float = 4.0
     max_reflection_retries: int = 2
     auto_approve_reads: bool = True
     workdir: Path = field(default_factory=Path.cwd)
