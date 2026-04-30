@@ -120,6 +120,14 @@ scripts\doctor.bat    :: diagnoses what's working and prints exact fix commands
 
 `doctor.bat` is non-destructive — run it first if anything's off.
 
+**Tenant-specific install wrapper.** If your company gives you a script that
+already configures the corp proxy / CA bundle / private index (commonly named
+`pipinstall.bat`), drop it into `scripts/pipinstall.bat`. Both `setup.bat` and
+`doctor.bat` auto-detect it and use it as a drop-in for `pip install …`,
+skipping the public-PyPI bootstrap. The wrapper is gitignored
+(`scripts/pipinstall.*`, `scripts/*-tenant.*`, `scripts/*.local.*`) so it
+never accidentally ends up in version control.
+
 ## GUI
 
 A PySide6 desktop app with a ChatGPT-style dark theme, markdown + Pygments

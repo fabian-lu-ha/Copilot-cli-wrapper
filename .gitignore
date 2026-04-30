@@ -20,6 +20,14 @@ edge-profile/
 *.zip
 *.tar.gz
 
+# tenant-specific install wrappers (local-only, never commit)
+scripts/pipinstall.bat
+scripts/pipinstall.cmd
+scripts/pipinstall.exe
+scripts/pipinstall.ps1
+scripts/*-tenant.*
+scripts/*.local.*
+
 # IDE
 .vscode/
 .idea/
