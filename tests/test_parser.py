@@ -1,4 +1,4 @@
-from copilot_cli.agent.parser import FinalAnswer, StreamingParser, ToolCall
+from copilot_cli.agent.parser import FinalAnswer, StreamingParser, ToolCall, strip_copilot_noise
 
 
 def test_extracts_complete_tool_call():
@@ -109,3 +109,46 @@ def test_falls_through_to_final_when_only_malformed_tool_block():
     ev = p.pop_complete()
     assert isinstance(ev, FinalAnswer)
     assert ev.text == "just answering directly"
+
+
+def test_strip_copilot_noise_chain_of_thought():
+    """M365 Copilot wraps internal reasoning in Show**...**Hide. Strip it."""
+    text = "Show**Considering file instructions**\nI'll read the file.**Hide<tool_use>"
+    cleaned = strip_copilot_noise(text)
+    assert "Show**" not in cleaned
+    assert "**Hide" not in cleaned
+    assert "<tool_use>" in cleaned
+
+
+def test_strip_copilot_noise_code_interpreter_banner():
+    text = (
+        "Coding and executing```python\nprint('noop')\n```"
+        '{"executedCode":"print(\'noop\')","result":"","status":"Success",'
+        '"stdout":"noop\\n","stderr":"","outputFiles":[]}<tool_use>'
+    )
+    cleaned = strip_copilot_noise(text)
+    assert "Coding and executing" not in cleaned
+    assert "executedCode" not in cleaned
+    assert "<tool_use>" in cleaned
+
+
+def test_strip_copilot_noise_search_preamble_and_loading():
+    text = "OK, I'll search for 'secret.txt'...\nLining things up...\nGenerating response\nactual content"
+    cleaned = strip_copilot_noise(text)
+    assert "search for" not in cleaned
+    assert "Lining things up" not in cleaned
+    assert "Generating response" not in cleaned
+    assert "actual content" in cleaned
+
+
+def test_visible_text_strips_noise_around_tool_use():
+    p = StreamingParser()
+    p.feed("Show**Thinking**Hide<tool_use><name>x</name><args>{}</args></tool_use>")
+    # The full event still parses correctly.
+    ev = p.pop_complete()
+    assert isinstance(ev, ToolCall)
+    # And the visible text we'd render shows nothing of the chain-of-thought.
+    p2 = StreamingParser()
+    p2.feed("Show**Thinking**Hidesomething before <tool_use>")
+    assert "Show**" not in p2.visible_text
+    assert "**Hide" not in p2.visible_text

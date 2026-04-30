@@ -23,6 +23,31 @@ FINAL_CLOSE = "</final>"
 _NAME_RE = re.compile(r"<name>\s*(.*?)\s*</name>", re.DOTALL)
 _ARGS_RE = re.compile(r"<args>\s*(.*?)\s*</args>", re.DOTALL)
 
+# M365 Copilot wraps internal chain-of-thought between literal Show**...**Hide
+# markers, prefixes search/code-interpreter activity with banner text, and
+# leaves "Coding and executing ```python ... ```" blocks in the response.
+# None of that should reach the user; strip it before display and before the
+# tag scanner sees it.
+_COPILOT_NOISE_PATTERNS = [
+    re.compile(r"Show\*\*[^*]*\*\*", re.DOTALL),
+    re.compile(r"\*\*Hide", re.DOTALL),
+    re.compile(r"Coding and executing```[^`]*```", re.DOTALL),
+    re.compile(r'\{"executedCode":[^}]*"outputFiles":\[\]\}', re.DOTALL),
+    re.compile(r"OK,? I'?ll search for [^\n]*\n", re.IGNORECASE),
+    re.compile(r"^Copilot said:\s*\nCopilot\s*\n", re.MULTILINE),
+    re.compile(r"^Lining things up\.\.\.\s*\n", re.MULTILINE),
+    re.compile(r"^Generating response\s*\n", re.MULTILINE),
+]
+
+
+def strip_copilot_noise(text: str) -> str:
+    """Remove M365 Copilot UI / chain-of-thought artifacts that bleed into
+    the streamed reply. Idempotent — safe to call repeatedly during a
+    streaming render."""
+    for pat in _COPILOT_NOISE_PATTERNS:
+        text = pat.sub("", text)
+    return text
+
 
 @dataclass
 class ToolCall:
@@ -46,16 +71,19 @@ class StreamingParser:
 
     @property
     def visible_text(self) -> str:
-        """Text safe to display to the user (everything outside an in-progress tag)."""
-        # Hide content from the first unmatched opening tag onward to avoid
-        # leaking partial tool_use XML to the terminal.
+        """Text safe to display to the user (everything outside an in-progress
+        tag, with Copilot UI artifacts stripped)."""
+        raw = self.buffer
+        # Hide content from the first unmatched opening tag onward so partial
+        # tool_use XML doesn't leak to the terminal.
         for marker in (TOOL_OPEN, FINAL_OPEN):
-            idx = self.buffer.rfind(marker)
+            idx = raw.rfind(marker)
             if idx != -1:
                 close = TOOL_CLOSE if marker == TOOL_OPEN else FINAL_CLOSE
-                if self.buffer.find(close, idx) == -1:
-                    return self.buffer[self._consumed_to:idx]
-        return self.buffer[self._consumed_to:]
+                if raw.find(close, idx) == -1:
+                    raw = raw[:idx]
+                    break
+        return strip_copilot_noise(raw[self._consumed_to:])
 
     def mark_displayed(self) -> None:
         self._consumed_to = len(self._strip_after_open())

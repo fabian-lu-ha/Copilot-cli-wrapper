@@ -38,6 +38,38 @@ def _looks_like_transient_failure(text: str) -> bool:
         return True
     return any(n in t for n in TRANSIENT_FAILURE_NEEDLES)
 
+
+# Phrases that indicate the model is *claiming* to have done a file-touching
+# action without actually emitting a <tool_use>. Treated as hallucination —
+# we retry the step with a corrective preamble.
+_HALLUCINATION_PHRASES = [
+    "i've created", "i have created",
+    "i've written", "i have written",
+    "i've read", "i have read",
+    "i've successfully", "i have successfully",
+    "i wrote the file", "i created the file", "i read the file",
+    "task completed",
+    "successfully created",
+    "successfully wrote",
+    "after writing the file",
+    "after reading the file",
+]
+
+
+def _looks_like_hallucination(text: str, has_tool_use: bool) -> bool:
+    """Return True if the assistant claimed an action it never invoked.
+
+    M365 Copilot's chat-style training makes it sometimes describe what it
+    would do in prose ("I've created add.py with the function...") instead
+    of actually emitting <tool_use>. If we accept that as the answer, the
+    user gets a confidently fabricated success message and no real work
+    happens. Detect and force a retry.
+    """
+    if has_tool_use:
+        return False
+    low = text.lower()
+    return any(p in low for p in _HALLUCINATION_PHRASES)
+
 COMPACT_REQUEST = (
     "Summarize the conversation so far in 8-15 bullet points. Cover: the user's "
     "overall goal, key decisions made, files read or edited (with paths), and "
@@ -93,24 +125,45 @@ class AgentLoop:
             # the stream end naturally is slower per step but more reliable.
             assistant_text = ""
             event = None
+            attempt_prompt = upstream_prompt
             for attempt in range(MAX_RETRIES_PER_STEP + 1):
                 if attempt > 0:
                     self.console.print(
-                        f"[yellow]step {step+1}: retry {attempt} "
-                        f"after transient/empty response[/]"
+                        f"[yellow]step {step+1}: retry {attempt}[/]"
                     )
                     await self.backend.new_conversation()
                 parser = StreamingParser()
                 renderer = StreamRenderer(self.console)
-                async for chunk in self.backend.send(upstream_prompt):
+                async for chunk in self.backend.send(attempt_prompt):
                     parser.feed(chunk)
                     assistant_text = parser.buffer
                     renderer.render(parser.visible_text)
                 event = parser.pop_complete()
-                # Accept anything that produced a real event OR a non-
-                # transient prose answer.
-                if event is not None or not _looks_like_transient_failure(assistant_text):
-                    break
+                has_tool_use = isinstance(event, ToolCall)
+
+                if _looks_like_transient_failure(assistant_text):
+                    # Empty/error reply — straight retry.
+                    continue
+                if _looks_like_hallucination(assistant_text, has_tool_use):
+                    # Model described the action in prose without invoking
+                    # the tool. Re-ask with a corrective preamble.
+                    self.console.print(
+                        "[yellow]model hallucinated a file action; "
+                        "forcing retry with corrective prompt[/]"
+                    )
+                    attempt_prompt = (
+                        upstream_prompt
+                        + "\n\n=== CORRECTION ===\n"
+                        "Your previous reply CLAIMED to have done a file action "
+                        "but you never actually emitted a <tool_use> block, so "
+                        "no file was touched. Reply NOW with ONLY a single "
+                        "<tool_use>...</tool_use> for the action you need (or "
+                        "<final>...</final> if no action is needed). No prose, "
+                        "no 'I've created', no chain of thought."
+                    )
+                    continue
+                # Real event or genuine prose answer — accept.
+                break
 
             renderer.newline()
             self.transcript.add("assistant", assistant_text.strip())
