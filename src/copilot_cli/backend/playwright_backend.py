@@ -81,20 +81,38 @@ class PlaywrightBackend(CopilotBackend):
         except Exception:
             await self._page.goto(self.settings.selectors.chat_url, wait_until="domcontentloaded")
 
-    async def _close_side_panes(self) -> None:
-        """Copilot sometimes auto-opens a Pages / Canvas / Loop side pane
-        and writes the response there instead of in the chat. The chat
-        bubble then sticks on "Lining things up..." forever. Detect and
-        close any visible side pane before sending the next prompt.
+    async def _close_side_panes(self) -> bool:
+        """Copilot's UI auto-opens a Pages / Canvas / Loop side pane on
+        anything that looks document-shaped (long prompts, XML markup) and
+        writes the response there instead of in the chat — the chat bubble
+        then sticks on "Lining things up..." forever. Selectors confirmed
+        live (M365 Copilot, 2026-04):
+
+          - container: [data-testid="pages-sidepane"]
+          - close button inside it: [data-testid="discardButton"]
+            (also has aria-label="Close")
+
+        Returns True if a pane was found and dismissed.
         """
         if self._page is None:
-            return
+            return False
+        closed_any = False
         try:
-            # Close buttons typical for the Pages / Canvas / Loop side pane
-            # in M365 Copilot (mid-2026 build). Each is best-effort.
+            pane = self._page.locator('[data-testid="pages-sidepane"]')
+            if await pane.count() > 0:
+                close_btn = self._page.locator(
+                    '[data-testid="pages-sidepane"] [data-testid="discardButton"], '
+                    '[data-testid="pages-sidepane"] button[aria-label="Close" i]'
+                )
+                if await close_btn.count() > 0:
+                    log.debug("closing pages-sidepane via discardButton")
+                    try:
+                        await close_btn.first.click(timeout=1500)
+                        closed_any = True
+                    except Exception as e:
+                        log.debug("discardButton click failed: %s", e)
+            # Generic fallbacks for older / variant builds.
             for sel in (
-                'button[aria-label*="Close" i][aria-label*="page" i]',
-                'button[aria-label*="Close" i][aria-label*="canvas" i]',
                 'button[aria-label*="Close pane" i]',
                 'button[data-testid*="closeReferencePane" i]',
                 'button[data-testid*="closeSidePane" i]',
@@ -104,10 +122,12 @@ class PlaywrightBackend(CopilotBackend):
                     log.debug("closing side pane via %s", sel)
                     try:
                         await btns.first.click(timeout=1000)
+                        closed_any = True
                     except Exception:
                         pass
         except Exception as e:
             log.debug("side-pane probe failed: %s", e)
+        return closed_any
 
     async def send(self, prompt: str) -> AsyncIterator[str]:
         assert self._page and self._capture
@@ -131,6 +151,27 @@ class PlaywrightBackend(CopilotBackend):
             await page.keyboard.press("Meta+A" if self._is_mac() else "Control+A")
             await page.keyboard.press("Delete")
             await page.evaluate("(t) => document.execCommand('insertText', false, t)", prompt)
+
+        # Background coroutine: poll every 1.5s for the Pages side pane
+        # opening mid-stream and click its close button. Without this the
+        # response gets routed to the pane and the chat bubble sticks on
+        # "Lining things up..." until our DOM-poll fallback grabs that
+        # placeholder.
+        pane_stop = asyncio.Event()
+
+        async def _pane_watcher() -> None:
+            while not pane_stop.is_set():
+                try:
+                    if await self._close_side_panes():
+                        log.info("closed Pages side pane that opened mid-turn")
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(pane_stop.wait(), timeout=1.5)
+                except asyncio.TimeoutError:
+                    pass
+
+        watcher_task = asyncio.create_task(_pane_watcher())
 
         self._network_idle_event.clear()
         self._capture.begin_turn()
@@ -170,6 +211,11 @@ class PlaywrightBackend(CopilotBackend):
                 yield delta
         finally:
             self._capture.end_turn()
+            pane_stop.set()
+            try:
+                await watcher_task
+            except Exception:
+                pass
 
     async def _dom_poll_stream(self, prior_count: int) -> AsyncIterator[str]:
         assert self._page
