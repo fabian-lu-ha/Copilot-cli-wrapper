@@ -16,6 +16,27 @@ from copilot_cli.ui.render import StreamRenderer
 log = logging.getLogger(__name__)
 
 MAX_STEPS_PER_TURN = 25
+MAX_RETRIES_PER_STEP = 2
+
+# Substrings that mean "Copilot didn't actually answer" — the chat bubble
+# either showed a server error or a half-rendered loading placeholder. We
+# treat these as a retry-worthy failure of the step.
+TRANSIENT_FAILURE_NEEDLES = (
+    "Something went wrong",
+    "Please try again later",
+    "Lining things up",
+    "Generating response",
+)
+
+
+def _looks_like_transient_failure(text: str) -> bool:
+    if not text:
+        return True
+    t = text.strip()
+    if len(t) < 20:
+        # Empty or near-empty replies are not real answers.
+        return True
+    return any(n in t for n in TRANSIENT_FAILURE_NEEDLES)
 
 COMPACT_REQUEST = (
     "Summarize the conversation so far in 8-15 bullet points. Cover: the user's "
@@ -64,18 +85,35 @@ class AgentLoop:
             self.console.print()
             self.console.rule(f"[dim]assistant (step {step + 1})")
 
+            # Drain the entire streamed response. We used to break the
+            # second </tool_use> arrived, but cutting the model off mid-
+            # generation means anything it was about to add (e.g. trailing
+            # commitment text) gets dropped, and the upstream chat is left
+            # in a half-finished state that confuses the next turn. Letting
+            # the stream end naturally is slower per step but more reliable.
             assistant_text = ""
-            async for chunk in self.backend.send(upstream_prompt):
-                parser.feed(chunk)
-                assistant_text = parser.buffer
-                renderer.render(parser.visible_text)
-                if parser.pop_complete() is not None:
+            event = None
+            for attempt in range(MAX_RETRIES_PER_STEP + 1):
+                if attempt > 0:
+                    self.console.print(
+                        f"[yellow]step {step+1}: retry {attempt} "
+                        f"after transient/empty response[/]"
+                    )
+                    await self.backend.new_conversation()
+                parser = StreamingParser()
+                renderer = StreamRenderer(self.console)
+                async for chunk in self.backend.send(upstream_prompt):
+                    parser.feed(chunk)
+                    assistant_text = parser.buffer
+                    renderer.render(parser.visible_text)
+                event = parser.pop_complete()
+                # Accept anything that produced a real event OR a non-
+                # transient prose answer.
+                if event is not None or not _looks_like_transient_failure(assistant_text):
                     break
 
             renderer.newline()
             self.transcript.add("assistant", assistant_text.strip())
-
-            event = parser.pop_complete()
             if isinstance(event, FinalAnswer):
                 last_text = event.text
                 self.console.rule("[dim]done")
