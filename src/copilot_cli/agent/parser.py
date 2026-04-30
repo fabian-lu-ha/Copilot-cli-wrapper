@@ -70,12 +70,26 @@ class StreamingParser:
         return self.buffer
 
     def pop_complete(self) -> Optional[ToolCall | FinalAnswer]:
-        # Tool call has priority if both present.
-        t_open = self.buffer.find(TOOL_OPEN)
-        t_close = self.buffer.find(TOOL_CLOSE, t_open + 1) if t_open != -1 else -1
-        if t_open != -1 and t_close != -1:
+        # Tool call has priority over final.
+        # Walk all <tool_use>...</tool_use> blocks in order; return the first
+        # that is well-formed. Models often quote the format as an example
+        # ("emit <tool_use>...</tool_use>") — that block has no <name>/<args>
+        # and would crash the loop, so we skip past it instead of raising.
+        cursor = 0
+        while True:
+            t_open = self.buffer.find(TOOL_OPEN, cursor)
+            if t_open == -1:
+                break
+            t_close = self.buffer.find(TOOL_CLOSE, t_open + 1)
+            if t_close == -1:
+                break
             block = self.buffer[t_open + len(TOOL_OPEN): t_close]
-            return _parse_tool_block(block, self.buffer[t_open: t_close + len(TOOL_CLOSE)])
+            raw = self.buffer[t_open: t_close + len(TOOL_CLOSE)]
+            try:
+                return _parse_tool_block(block, raw)
+            except ValueError:
+                cursor = t_close + len(TOOL_CLOSE)
+                continue
 
         f_open = self.buffer.find(FINAL_OPEN)
         f_close = self.buffer.find(FINAL_CLOSE, f_open + 1) if f_open != -1 else -1

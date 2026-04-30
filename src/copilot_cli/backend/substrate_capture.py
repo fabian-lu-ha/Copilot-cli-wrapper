@@ -40,13 +40,35 @@ SUBSTRATE_URL_NEEDLES = (
 
 @dataclass
 class FrameEvent:
-    kind: str          # "delta" | "end"
+    kind: str          # "full" | "chunk" | "end"
     text: Optional[str]
 
 
 def is_substrate_url(url: str) -> bool:
     u = url.lower()
     return any(n in u for n in SUBSTRATE_URL_NEEDLES)
+
+
+def extract_write_at_cursor(record: dict) -> Optional[str]:
+    """Return the incremental chunk from a `writeAtCursor` substrate frame.
+
+    M365 Copilot streams the assistant reply as: one initial type=1 frame with
+    `messages[].text` carrying the first token (e.g. "This"), then a sequence
+    of type=1 frames each with `arguments[].writeAtCursor` carrying the next
+    chunk (" is", " a single short sentence to", ...). The final frame replays
+    the assembled text via `messages[].text`. The caller appends each chunk
+    onto its own running buffer.
+    """
+    args = record.get("arguments")
+    if not isinstance(args, list):
+        return None
+    for arg in args:
+        if not isinstance(arg, dict):
+            continue
+        chunk = arg.get("writeAtCursor")
+        if isinstance(chunk, str) and chunk:
+            return chunk
+    return None
 
 
 def parse_signalr_payload(payload: str | bytes) -> Iterable[dict]:
@@ -98,7 +120,21 @@ def extract_assistant_text(record: dict) -> Optional[str]:
     return None
 
 
+_META_CONTENT_TYPES = {"searchresults", "suggestion", "progress"}
+
+
 def _from_messages(messages) -> Optional[str]:
+    """Walk a messages[] list and return the actual assistant reply, skipping
+    meta-annotations like search-results pre-ambles and reference lists.
+
+    Substrate intermixes several kinds of bot-authored frames during a turn:
+      - the real reply (no contentType, responseIdentifier="Default")
+      - search-results banner (contentType="SearchResults") e.g. "OK, I'll search for X..."
+      - references list (messageType startswith "ReferencesList")
+      - progress / suggestion notices (contentType in _META_CONTENT_TYPES)
+    All have author="bot" so an author-only filter would emit the wrong text
+    as the streamed answer.
+    """
     if not isinstance(messages, list):
         return None
     for msg in messages:
@@ -106,6 +142,12 @@ def _from_messages(messages) -> Optional[str]:
             continue
         author = (msg.get("author") or msg.get("role") or "").lower()
         if author and author not in ("bot", "assistant", "copilot"):
+            continue
+        ct = (msg.get("contentType") or "").lower()
+        if ct in _META_CONTENT_TYPES:
+            continue
+        mt = (msg.get("messageType") or "")
+        if mt.startswith("ReferencesList") or mt.startswith("InternalSearch"):
             continue
         text = msg.get("text") or msg.get("content")
         if isinstance(text, str) and text:
@@ -162,9 +204,23 @@ class SubstrateCapture:
                     continue
                 if record.get("type") != 1:
                     continue
+                # writeAtCursor (incremental delta) takes precedence over
+                # messages[].text, because some frames contain BOTH a cursor
+                # marker AND the bootstrap message — emitting both would
+                # double-print the first token.
+                chunk = extract_write_at_cursor(record)
+                if chunk is not None:
+                    self._enqueue(FrameEvent("chunk", chunk))
+                    continue
                 text = extract_assistant_text(record)
                 if text:
-                    self._enqueue(FrameEvent("delta", text))
+                    self._enqueue(FrameEvent("full", text))
+                    continue
+                # No text in this type-1 frame — could be throttling info,
+                # search-progress, references-list, or a "thinking" beat.
+                # Enqueue a heartbeat so the consumer's idle timer resets;
+                # real end-of-turn comes via type=2/3, not via silence.
+                self._enqueue(FrameEvent("heartbeat", None))
         except Exception as e:
             log.debug("frame parse error: %s", e)
 
@@ -180,6 +236,13 @@ class SubstrateCapture:
           - an "end" event (type 2 or 3 SignalR frame), OR
           - `idle_timeout` seconds with no new frame, OR
           - `hard_timeout` seconds total since first delta.
+
+        Two frame shapes drive the stream:
+          - "full" — a complete accumulated text snapshot (the bootstrap
+            messages[].text frame and the final replay). Emit the new suffix
+            relative to last_text.
+          - "chunk" — an incremental writeAtCursor delta. Emit verbatim and
+            append onto last_text.
         """
         last_text = ""
         first_delta_at: Optional[float] = None
@@ -191,9 +254,20 @@ class SubstrateCapture:
                 return
             if ev.kind == "end":
                 return
-            if ev.kind == "delta" and ev.text is not None:
+            if ev.kind == "heartbeat":
+                # No text but the WS is alive (throttling / search-progress /
+                # references). Just reset the idle timer by looping.
+                continue
+            if ev.kind == "chunk" and ev.text is not None:
+                if first_delta_at is None:
+                    first_delta_at = loop.time()
+                yield ev.text
+                last_text += ev.text
+                if (loop.time() - first_delta_at) > hard_timeout:
+                    return
+                continue
+            if ev.kind == "full" and ev.text is not None:
                 full = ev.text
-                # Substrate usually resends full-accumulated text per frame.
                 if full.startswith(last_text):
                     delta = full[len(last_text):]
                     if delta:
@@ -202,7 +276,7 @@ class SubstrateCapture:
                         yield delta
                     last_text = full
                 else:
-                    # Frame replaced (rare): emit replacement entirely.
+                    # Replacement (rare): substrate replaced the buffer.
                     if first_delta_at is None:
                         first_delta_at = loop.time()
                     yield full
@@ -210,16 +284,30 @@ class SubstrateCapture:
                 if first_delta_at is not None and (loop.time() - first_delta_at) > hard_timeout:
                     return
 
-    async def wait_for_first_delta(self, timeout: float) -> Optional[FrameEvent]:
-        """Peek the queue for the first `delta` event within `timeout`; returns
-        None if none arrives. Re-queues the event so stream_deltas() sees it."""
-        try:
-            ev = await asyncio.wait_for(self._q.get(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return None
-        # Put it back at the head — for an asyncio.Queue we can't peek, so
-        # re-enqueue and rely on FIFO. The chance of another event arriving
-        # in between is small; if it does, ordering is still preserved
-        # because queue is FIFO and we re-put first.
-        await self._q.put(ev)
-        return ev
+    async def wait_for_first_delta(
+        self, timeout: float, hard_timeout: Optional[float] = None
+    ) -> Optional[FrameEvent]:
+        """Wait for the first text-bearing event ("full" or "chunk") or end
+        event. `timeout` is the max gap between ANY substrate frames — each
+        heartbeat (throttling / search-progress / references) resets it,
+        because they prove Copilot is actively processing. `hard_timeout`
+        caps the total wait regardless. Heartbeats are drained silently;
+        the returned text event is re-queued so stream_deltas() sees it.
+        """
+        loop = asyncio.get_event_loop()
+        hard_deadline = loop.time() + (hard_timeout if hard_timeout is not None else timeout * 8)
+        while True:
+            now = loop.time()
+            if now >= hard_deadline:
+                return None
+            silence_left = min(timeout, hard_deadline - now)
+            try:
+                ev = await asyncio.wait_for(self._q.get(), timeout=silence_left)
+            except asyncio.TimeoutError:
+                return None
+            if ev.kind in ("full", "chunk", "end"):
+                await self._q.put(ev)
+                return ev
+            # heartbeat: WS is alive, Copilot is still thinking. Reset the
+            # silence timer by looping (next iteration re-derives it from
+            # current time).

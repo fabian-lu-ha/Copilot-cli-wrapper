@@ -91,14 +91,35 @@ class PlaywrightBackend(CopilotBackend):
         input_box = page.locator(sel.input_box).first
         await input_box.wait_for(state="visible", timeout=15000)
         await input_box.click()
-        await input_box.fill("")
-        await input_box.type(prompt, delay=4)
+        # Lexical editor (M365's chat input) accepts both fill() and the
+        # native execCommand('insertText') path. fill() is much faster than
+        # typing keystroke-by-keystroke (~12s for 3KB → instant).
+        try:
+            await input_box.fill(prompt)
+        except Exception:
+            # Some Lexical builds reject .fill(); fall back to a single
+            # InsertText event which Lexical handles natively.
+            await page.keyboard.press("Meta+A" if self._is_mac() else "Control+A")
+            await page.keyboard.press("Delete")
+            await page.evaluate("(t) => document.execCommand('insertText', false, t)", prompt)
 
         self._network_idle_event.clear()
         self._capture.begin_turn()
         try:
-            send_btn = page.locator(sel.send_button).first
-            await send_btn.click()
+            # Modern M365 Copilot has no dedicated Send button — submission is
+            # via Enter on the Lexical editor. Try Enter first; if the input
+            # still has the prompt afterwards, fall back to clicking the
+            # configured send_button selector.
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.3)
+            try:
+                still_has = (await input_box.inner_text(timeout=1000)).strip()
+            except Exception:
+                still_has = ""
+            if still_has and still_has.startswith(prompt[:30]):
+                send_btn = page.locator(sel.send_button).first
+                if await send_btn.count() > 0:
+                    await send_btn.click()
 
             # Race: try WebSocket capture first. If a delta arrives within
             # ws_first_delta_timeout, stream from the WS for the rest of the
@@ -106,7 +127,7 @@ class PlaywrightBackend(CopilotBackend):
             first = await self._capture.wait_for_first_delta(
                 timeout=self.settings.ws_first_delta_timeout
             )
-            if first is not None and first.kind == "delta":
+            if first is not None and first.kind in ("full", "chunk"):
                 log.debug("streaming via WebSocket capture")
                 async for delta in self._capture.stream_deltas(
                     idle_timeout=self.settings.response_stable_seconds,
@@ -181,6 +202,12 @@ class PlaywrightBackend(CopilotBackend):
         page = self._page
         try:
             btn = page.get_by_role("button").filter(has_text=MODEL_BUTTON_NAME_RE).first
+            # The model picker mounts a few seconds after the input box.
+            # Wait briefly so /models right after startup doesn't return [].
+            for _ in range(15):
+                if await btn.count() > 0:
+                    break
+                await asyncio.sleep(0.5)
             if await btn.count() == 0:
                 return []
             await btn.click(timeout=3000)
@@ -227,6 +254,11 @@ class PlaywrightBackend(CopilotBackend):
             except Exception:
                 pass
             return False
+
+    @staticmethod
+    def _is_mac() -> bool:
+        import platform as _p
+        return _p.system() == "Darwin"
 
     async def _wait_for_signin(self) -> None:
         assert self._page

@@ -40,10 +40,35 @@ class Selectors:
     when Microsoft changes the page without waiting for a release."""
 
     chat_url: str = "https://m365.cloud.microsoft/chat"
-    input_box: str = 'div[contenteditable="true"][role="textbox"], textarea[aria-label*="Message"]'
-    send_button: str = 'button[aria-label*="Send"], button[data-testid="send-button"]'
-    response_messages: str = '[data-content="ai-message"], [data-testid="bot-message"]'
-    new_chat_button: str = 'button[aria-label*="New chat"]'
+    # Lexical editor is a span with role="textbox" and data-lexical-editor;
+    # `#m365-chat-editor-target-element` is the stable per-page id observed in
+    # the M365 Copilot UI as of 2026-04. Fallbacks cover other tenant rings
+    # and pre-Lexical builds.
+    input_box: str = (
+        '#m365-chat-editor-target-element, '
+        '[data-lexical-editor="true"][role="textbox"], '
+        '[contenteditable="true"][role="textbox"], '
+        'textarea[aria-label*="Message" i]'
+    )
+    # Modern Copilot has no explicit send button — Enter submits. Backend
+    # tries Enter first and only falls back to this selector if the input
+    # still has the prompt. Keep it permissive in case a tenant ring re-adds
+    # the button.
+    send_button: str = (
+        'button[aria-label*="Send" i]:not([aria-label*="feedback" i]), '
+        'button[data-testid="send-button"]'
+    )
+    # Assistant bubbles use class `fai-CopilotMessage` and role="article"
+    # with aria-labelledby="copilot-message-…". `__content` would target only
+    # the rendered text, but for streaming we want the whole bubble so DOM
+    # polling can read its inner_text.
+    response_messages: str = (
+        '.fai-CopilotMessage, '
+        '[role="article"][aria-labelledby^="copilot-message-"], '
+        '[data-content="ai-message"], '
+        '[data-testid="bot-message"]'
+    )
+    new_chat_button: str = '[data-testid="newChatButton"], button[aria-label*="New chat" i]'
 
     @classmethod
     def load(cls) -> "Selectors":
@@ -60,12 +85,17 @@ class Settings:
     headless: bool = False
     edge_channel: str = "msedge"
     profile_dir: Path = field(default_factory=edge_profile_dir)
-    response_stable_seconds: float = 2.5
+    # How long with NO substrate frame at all before we give up. Copilot
+    # pauses for up to ~10s while it grounds against search/OneDrive — but
+    # those pauses still emit metadata frames (search progress, throttling)
+    # that we count as heartbeats. Real silence > 15s means the WS died.
+    response_stable_seconds: float = 15.0
     response_timeout_seconds: float = 180.0
-    # How long to wait for the FIRST WebSocket delta before falling back to
-    # DOM polling. Substrate normally sends within ~1s; if nothing in 4s the
-    # frame schema probably changed (fall back).
-    ws_first_delta_timeout: float = 4.0
+    # How long to wait for the FIRST WebSocket text frame before falling back
+    # to DOM polling. Live capture (2026-04) shows the first reply token
+    # typically lands 8–12s after send because Copilot does throttling +
+    # SearchResults preamble first; under 10s causes false fallbacks.
+    ws_first_delta_timeout: float = 15.0
     max_reflection_retries: int = 2
     auto_approve_reads: bool = True
     workdir: Path = field(default_factory=Path.cwd)

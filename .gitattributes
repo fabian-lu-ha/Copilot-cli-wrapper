@@ -1,0 +1,10 @@
+# Windows shell scripts MUST have CRLF line endings or cmd.exe parses them
+# unreliably (multi-line if blocks, ^ continuations, and goto labels can fail
+# silently). Forcing eol=crlf here ensures every checkout — regardless of the
+# user's core.autocrlf setting — gets CRLF on disk for these files.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Everything else: keep platform-native (LF in repo, native on checkout).
+* text=auto

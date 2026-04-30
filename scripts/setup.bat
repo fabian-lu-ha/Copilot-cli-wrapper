@@ -63,18 +63,23 @@ if not defined PIPINSTALL (
 REM ---- step 2: install package ---------------------------------------
 echo [2/4] Installing copilot-cli-wrapper...
 pushd "%~dp0\.."
+REM Isolate the tenant wrapper in a child cmd: some corporate pipinstall.bat
+REM scripts use 'exit' (not 'exit /b') and would otherwise terminate this
+REM script silently right after install - looking like a random "stops after
+REM pip" bug with no error.
 if defined PIPINSTALL (
-    call "!PIPINSTALL!" -e ".[gui,tokens]"
+    cmd /s /c ""!PIPINSTALL!" -e ".[gui,tokens]""
 ) else (
     python -m pip install -e ".[gui,tokens]"
 )
-if errorlevel 1 (
-    echo ERROR: install failed.
-    popd
+set "INSTALL_RC=!ERRORLEVEL!"
+popd
+if not "!INSTALL_RC!" == "0" (
+    echo ERROR: install failed ^(exit code !INSTALL_RC!^).
     pause
     exit /b 1
 )
-popd
+echo   ...installed
 echo.
 
 REM ---- step 3: playwright msedge driver ------------------------------
@@ -132,5 +137,9 @@ echo.
 echo If 'copilot' isn't found, open a new cmd window first
 echo so it picks up the updated PATH.
 echo.
+REM Keep the window open if the user ran this by double-clicking from
+REM Explorer - without pause, the cmd window would close immediately on
+REM success and they'd never see the "Setup complete" banner.
+pause
 endlocal
 exit /b 0

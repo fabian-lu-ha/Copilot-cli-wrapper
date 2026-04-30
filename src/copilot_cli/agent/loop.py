@@ -48,22 +48,24 @@ class AgentLoop:
     async def run_user_turn(self, user_input: str) -> str:
         self.transcript.add("user", user_input)
         await self._maybe_auto_compact()
-        # Reset upstream once per user turn and prime with the full transcript
-        # (system prompt + all prior turns + this user message). Subsequent
-        # tool-result steps within the same turn are sent as follow-up
-        # messages, so Copilot's own session memory carries them.
-        await self.backend.new_conversation()
-        next_prompt: str = self.transcript.render_for_upstream()
         last_text = ""
 
         for step in range(MAX_STEPS_PER_TURN):
+            # Reset upstream and replay the FULL transcript every step. Copilot
+            # doesn't natively understand <tool_result> as a tool reply — to
+            # it, tags are just text. Without replaying the full back-and-forth
+            # the model loses its own previous <tool_use> turn and tends to
+            # re-emit it (or wander off into Pages / Code Interpreter).
+            await self.backend.new_conversation()
+            upstream_prompt = self.transcript.render_for_upstream()
+
             parser = StreamingParser()
             renderer = StreamRenderer(self.console)
             self.console.print()
             self.console.rule(f"[dim]assistant (step {step + 1})")
 
             assistant_text = ""
-            async for chunk in self.backend.send(next_prompt):
+            async for chunk in self.backend.send(upstream_prompt):
                 parser.feed(chunk)
                 assistant_text = parser.buffer
                 renderer.render(parser.visible_text)
@@ -83,7 +85,6 @@ class AgentLoop:
                 tool_msg = self._format_tool_result(event.name, tool_output)
                 self.transcript.add("tool", tool_msg)
                 self.console.print(f"[dim]→ tool {event.name}: {self._snippet(tool_output)}")
-                next_prompt = tool_msg  # follow-up message in the same upstream chat
                 continue
 
             # No tool call, no final marker. Treat plain prose as the answer.
@@ -108,9 +109,22 @@ class AgentLoop:
 
     @staticmethod
     def _format_tool_result(name: str, output: str) -> str:
+        # Frame the result so Copilot knows the action ran and what to do
+        # next. Without this preamble Copilot sometimes re-emits the same
+        # <tool_use> (thinking it never executed) or wanders off into
+        # Pages / Code Interpreter on the next step.
         return (
             f"<tool_result>\n  <name>{name}</name>\n"
-            f"  <output>{output}</output>\n</tool_result>"
+            f"  <output>{output}</output>\n</tool_result>\n\n"
+            f"The harness ran your {name} action. The text inside <output> "
+            f"above is the actual result from the user's machine. Use it to "
+            f"continue:\n"
+            f"- If you have everything you need, reply with ONLY "
+            f"<final>your answer</final>.\n"
+            f"- If you need another action, reply with ONLY a new "
+            f"<tool_use>...</tool_use>.\n"
+            f"Either way, no preamble, no Pages, no Code Interpreter, no "
+            f"prose explaining what you'll do — just the tag."
         )
 
     @staticmethod
