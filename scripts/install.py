@@ -53,7 +53,10 @@ def find_tenant_wrapper() -> Optional[Path]:
 
 def run(cmd: list[str], **kwargs) -> int:
     """Run a subprocess, stream output to our stdout/stderr, return rc."""
-    print(f"  $ {' '.join(cmd)}")
+    # Use list2cmdline for the displayed form so the user sees properly
+    # quoted paths-with-spaces (Python's subprocess does this internally
+    # before calling CreateProcess on Windows).
+    print(f"  $ {subprocess.list2cmdline(cmd)}")
     try:
         return subprocess.call(cmd, **kwargs)
     except FileNotFoundError as e:
@@ -61,21 +64,32 @@ def run(cmd: list[str], **kwargs) -> int:
         return 127
 
 
-def pip_install(args: list[str], wrapper: Optional[Path]) -> int:
+def pip_install(args: list[str], wrapper: Optional[Path], cwd: Optional[Path] = None) -> int:
     """Either invoke the tenant wrapper with the given args (positional after
     'install', following the existing wrapper convention) or run plain
-    `python -m pip install ...`."""
+    `python -m pip install ...`. Path-with-spaces safe on Windows: bat/cmd
+    wrappers go through cmd.exe with subprocess.list2cmdline-quoted args;
+    everything else uses subprocess.call's list form which CreateProcess
+    quotes for us."""
+    kwargs: dict = {}
+    if cwd is not None:
+        kwargs["cwd"] = str(cwd)
     if wrapper is not None:
-        # Tenant wrappers receive the same args you'd pass to `pip install`.
-        if wrapper.suffix.lower() in (".bat", ".cmd"):
-            cmd = ["cmd", "/s", "/c", str(wrapper), *args]
-        elif wrapper.suffix.lower() == ".ps1":
-            cmd = ["powershell", "-NoProfile", "-File", str(wrapper), *args]
+        suf = wrapper.suffix.lower()
+        if suf in (".bat", ".cmd") and os.name == "nt":
+            # On Windows, a .bat must be invoked via cmd.exe. Build the
+            # command string via list2cmdline so paths/args with spaces are
+            # quoted correctly, then feed cmd /s /c the whole quoted string.
+            inner = subprocess.list2cmdline([str(wrapper), *args])
+            cmd = ["cmd.exe", "/s", "/c", inner]
+        elif suf == ".ps1":
+            cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                   "-File", str(wrapper), *args]
         else:
             cmd = [str(wrapper), *args]
     else:
         cmd = [sys.executable, "-m", "pip", "install", *args]
-    return run(cmd)
+    return run(cmd, **kwargs)
 
 
 def can_reach_pypi() -> bool:
@@ -99,10 +113,12 @@ def add_to_user_path(target: Path) -> None:
     if os.name != "nt":
         print("  not on Windows; skipping PATH update")
         return
-    target_str = str(target)
+    # PowerShell single-quoted strings only need '' to escape an apostrophe.
+    # Backslashes in Windows paths are fine inside single quotes.
+    target_escaped = str(target).replace("'", "''")
     ps = (
         "$p = [Environment]::GetEnvironmentVariable('PATH','User');"
-        f"$d = '{target_str}';"
+        f"$d = '{target_escaped}';"
         "if ($p -notlike '*' + $d + '*') {"
         "  [Environment]::SetEnvironmentVariable('PATH', $p + ';' + $d, 'User');"
         "  Write-Host '  added to user PATH (open a new shell to pick it up)'"
@@ -155,7 +171,13 @@ def main(argv: list[str]) -> int:
 
     # ---- 2. install the package itself ----
     step(2, 4, "Installing copilot-cli-wrapper (with [gui,tokens] extras)…")
-    rc = pip_install(["-e", f"{REPO_ROOT}[gui,tokens]"], wrapper=wrapper)
+    # Use a relative path '.[gui,tokens]' with cwd=REPO_ROOT so the repo
+    # location never has to be quoted. Earlier we passed the absolute
+    # f"{REPO_ROOT}[gui,tokens]" which broke when REPO_ROOT contained
+    # spaces (Windows paths under "My Documents", "Program Files", etc.) —
+    # the [gui,tokens] suffix made it impossible to quote the path
+    # cleanly because pip parses extras off the end of the requirement.
+    rc = pip_install(["-e", ".[gui,tokens]"], wrapper=wrapper, cwd=REPO_ROOT)
     if rc != 0:
         print("\nERROR: install failed.")
         return rc
