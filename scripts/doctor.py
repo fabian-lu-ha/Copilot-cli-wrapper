@@ -132,15 +132,31 @@ def main() -> int:
             fix_cmd = "cd to repo dir and run: pip install -e .[gui,tokens]"
         fail("package not installed", fix_cmd)
 
-    # 6. copilot script on PATH
-    check_step(6, 8, "copilot command on PATH")
-    found = shutil.which("copilot")
-    if found:
-        ok(found)
+    # 6. copilot + copilot-gui scripts on PATH
+    check_step(6, 8, "copilot / copilot-gui commands on PATH")
+    cli_path = shutil.which("copilot")
+    gui_path = shutil.which("copilot-gui")
+    scripts_dir = sysconfig.get_path("scripts")
+    if cli_path:
+        ok(f"copilot     -> {cli_path}")
     else:
-        scripts_dir = sysconfig.get_path("scripts")
         warn(f"'copilot' not on PATH (Python Scripts dir: {scripts_dir})",
              f"add {scripts_dir} to PATH (run setup.bat) or use: python -m copilot_cli")
+    if gui_path:
+        ok(f"copilot-gui -> {gui_path}")
+    else:
+        # The GUI extras may not have been installed (PySide6 missing) or
+        # the tenant pip wrapper stripped the entry point. Either way the
+        # `python -m` form still works if the module is importable.
+        try:
+            import importlib
+            importlib.import_module("copilot_cli.gui.app")
+            warn("'copilot-gui' not on PATH but module imports fine",
+                 "run: python -m copilot_cli.gui.app")
+        except Exception as e:
+            warn(f"'copilot-gui' missing AND module import fails: {e}",
+                 f"reinstall with [gui] extras, or run setup.bat. If a tenant pipinstall wrapper "
+                 f"strips entry points, try: pip install -e \".[gui]\" --force-reinstall")
 
     # 7. Microsoft Edge
     check_step(7, 8, "Microsoft Edge")
