@@ -1,0 +1,249 @@
+/* ChatGPT-style dark theme. Tuned for high contrast + comfortable reading. */
+
+* {
+    font-family: "Segoe UI", "SF Pro Text", -apple-system, sans-serif;
+    color: #e6e9ef;
+}
+
+QMainWindow, QWidget#root {
+    background-color: #1a1b1e;
+}
+
+/* ------- sidebar ------- */
+QWidget#sidebar {
+    background-color: #131418;
+    border-right: 1px solid #24262c;
+}
+QListWidget#sessionList {
+    background: transparent;
+    border: none;
+    padding: 4px 0;
+    outline: 0;
+    font-size: 13px;
+}
+QListWidget#sessionList::item {
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin: 2px 8px;
+    color: #b6bccb;
+}
+QListWidget#sessionList::item:hover {
+    background-color: #1e2027;
+}
+QListWidget#sessionList::item:selected {
+    background-color: #2b2f38;
+    color: #ffffff;
+}
+
+QPushButton#newChatBtn {
+    background-color: #2b2f38;
+    border: 1px solid #353a45;
+    color: #e6e9ef;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 13px;
+}
+QPushButton#newChatBtn:hover { background-color: #353a45; }
+QPushButton#newChatBtn:pressed { background-color: #1e2027; }
+
+QLabel#sidebarHeader {
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 14px;
+    padding: 12px 16px 8px 16px;
+}
+QLabel#sidebarSubheader {
+    color: #8a92a4;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 12px 16px 4px 16px;
+}
+
+/* ------- top bar ------- */
+QWidget#topbar {
+    background-color: #1a1b1e;
+    border-bottom: 1px solid #24262c;
+    padding: 0 16px;
+    min-height: 44px;
+}
+QPushButton#modelPicker {
+    background: transparent;
+    border: 1px solid #353a45;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: #d1d5de;
+}
+QPushButton#modelPicker:hover { background-color: #1e2027; }
+
+QLabel#contextLabel {
+    color: #8a92a4;
+    font-size: 11px;
+    padding-right: 8px;
+}
+
+/* ------- chat area ------- */
+QScrollArea#chatScroll {
+    background-color: #1a1b1e;
+    border: none;
+}
+QScrollArea#chatScroll > QWidget > QWidget {
+    background-color: #1a1b1e;
+}
+
+/* message bubbles */
+QFrame#userBubble {
+    background-color: #2b2f38;
+    border-radius: 12px;
+    padding: 12px 16px;
+}
+QFrame#assistantBubble {
+    background-color: transparent;
+    padding: 0px 0px;
+}
+QFrame#toolBubble {
+    background-color: #15171c;
+    border: 1px solid #24262c;
+    border-radius: 10px;
+    padding: 8px 12px;
+}
+QLabel#roleLabel {
+    color: #8a92a4;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+QTextBrowser#messageBody {
+    background: transparent;
+    border: none;
+    selection-background-color: #3a4a8a;
+    color: #e6e9ef;
+    font-size: 14px;
+}
+
+/* tool collapsible */
+QPushButton#toolToggle {
+    background: transparent;
+    border: none;
+    color: #b6bccb;
+    text-align: left;
+    padding: 4px 0px;
+    font-family: Consolas, Menlo, monospace;
+    font-size: 12px;
+}
+QPushButton#toolToggle:hover { color: #ffffff; }
+QTextBrowser#toolOutput {
+    background-color: #0f1115;
+    border-radius: 6px;
+    padding: 8px;
+    color: #c5cad6;
+    font-family: Consolas, Menlo, monospace;
+    font-size: 12px;
+}
+
+/* ------- input ------- */
+QWidget#inputContainer {
+    background-color: #1a1b1e;
+    border-top: 1px solid #24262c;
+    padding: 12px 16px;
+}
+QFrame#inputFrame {
+    background-color: #2b2f38;
+    border: 1px solid #353a45;
+    border-radius: 14px;
+}
+QFrame#inputFrame:focus-within {
+    border-color: #4a90e2;
+}
+QPlainTextEdit#inputEdit {
+    background: transparent;
+    border: none;
+    padding: 12px 12px 4px 16px;
+    color: #ffffff;
+    font-size: 14px;
+    selection-background-color: #3a4a8a;
+}
+QPushButton#sendBtn {
+    background-color: #ffffff;
+    color: #131418;
+    border: none;
+    border-radius: 16px;
+    min-width: 32px;
+    min-height: 32px;
+    font-size: 16px;
+    font-weight: 700;
+}
+QPushButton#sendBtn:disabled {
+    background-color: #4a4f5a;
+    color: #8a92a4;
+}
+QPushButton#sendBtn:hover { background-color: #d8dde6; }
+
+/* ------- permission dialog ------- */
+QDialog#permDialog {
+    background-color: #1a1b1e;
+}
+QLabel#permTitle {
+    font-size: 16px;
+    font-weight: 700;
+    color: #ffffff;
+    padding-bottom: 8px;
+}
+QLabel#permArgKey {
+    color: #8a92a4;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+QLabel#permArgVal {
+    color: #d1d5de;
+    background-color: #15171c;
+    border: 1px solid #24262c;
+    border-radius: 6px;
+    padding: 8px;
+    font-family: Consolas, Menlo, monospace;
+    font-size: 12px;
+}
+QPushButton[role="primary"] {
+    background-color: #4a90e2;
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-weight: 600;
+}
+QPushButton[role="primary"]:hover { background-color: #5ba0f0; }
+QPushButton[role="ghost"] {
+    background: transparent;
+    color: #d1d5de;
+    border: 1px solid #353a45;
+    border-radius: 8px;
+    padding: 8px 16px;
+}
+QPushButton[role="ghost"]:hover { background-color: #1e2027; }
+QPushButton[role="danger"] {
+    background-color: transparent;
+    color: #e2756a;
+    border: 1px solid #4a2a26;
+    border-radius: 8px;
+    padding: 8px 16px;
+}
+QPushButton[role="danger"]:hover { background-color: #2a1816; }
+
+/* ------- scrollbars ------- */
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #353a45;
+    border-radius: 5px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover { background: #4a4f5a; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }

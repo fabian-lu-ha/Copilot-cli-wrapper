@@ -105,6 +105,38 @@ which the corp proxy also intercepts — same fix applies. Set
 `NODE_TLS_REJECT_UNAUTHORIZED=0` in the same shell as a last resort if
 Playwright's downloader chokes.
 
+## Quick install (Windows)
+
+Two `.bat` scripts in `scripts/` automate the messy parts:
+
+```cmd
+scripts\setup.bat     :: bootstraps pip-system-certs (corp TLS), installs the
+                      :: package with [gui] extras, installs Playwright's msedge
+                      :: driver, optionally adds Python's Scripts dir to PATH
+scripts\doctor.bat    :: diagnoses what's working and prints exact fix commands
+                      :: for whatever isn't (Python version, SSL, missing edge,
+                      :: missing playwright driver, copilot not on PATH, etc.)
+```
+
+`doctor.bat` is non-destructive — run it first if anything's off.
+
+## GUI
+
+A PySide6 desktop app with a ChatGPT-style dark theme, markdown + Pygments
+syntax highlighting in code blocks, streaming token rendering, collapsible
+tool-call boxes, sidebar with session history, model picker, and a context
+indicator. Same backend as the CLI (Playwright + agent loop), so anything that
+works in the terminal works here too.
+
+```cmd
+copilot-gui                          :: launch the desktop UI
+copilot-gui --workdir C:\some\repo   :: pin tools to a different repo
+copilot-gui --model "GPT-5.4 Thinking"
+```
+
+Install needs the `gui` extras: `pip install -e ".[gui]"` (or run
+`scripts\setup.bat`, which does it for you).
+
 ## Run
 
 ```powershell
