@@ -81,11 +81,40 @@ class PlaywrightBackend(CopilotBackend):
         except Exception:
             await self._page.goto(self.settings.selectors.chat_url, wait_until="domcontentloaded")
 
+    async def _close_side_panes(self) -> None:
+        """Copilot sometimes auto-opens a Pages / Canvas / Loop side pane
+        and writes the response there instead of in the chat. The chat
+        bubble then sticks on "Lining things up..." forever. Detect and
+        close any visible side pane before sending the next prompt.
+        """
+        if self._page is None:
+            return
+        try:
+            # Close buttons typical for the Pages / Canvas / Loop side pane
+            # in M365 Copilot (mid-2026 build). Each is best-effort.
+            for sel in (
+                'button[aria-label*="Close" i][aria-label*="page" i]',
+                'button[aria-label*="Close" i][aria-label*="canvas" i]',
+                'button[aria-label*="Close pane" i]',
+                'button[data-testid*="closeReferencePane" i]',
+                'button[data-testid*="closeSidePane" i]',
+            ):
+                btns = self._page.locator(sel)
+                if await btns.count() > 0:
+                    log.debug("closing side pane via %s", sel)
+                    try:
+                        await btns.first.click(timeout=1000)
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.debug("side-pane probe failed: %s", e)
+
     async def send(self, prompt: str) -> AsyncIterator[str]:
         assert self._page and self._capture
         page = self._page
         sel = self.settings.selectors
 
+        await self._close_side_panes()
         prior_count = await page.locator(sel.response_messages).count()
 
         input_box = page.locator(sel.input_box).first

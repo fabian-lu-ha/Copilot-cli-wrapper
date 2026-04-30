@@ -52,20 +52,63 @@ class Transcript:
         """Render the transcript as a single text block to send upstream.
 
         Copilot is essentially stateless from our wrapper's perspective once
-        we send a fresh prompt, so we replay the whole conversation each turn.
-        Tool turns are rendered as the same XML the model produced/expects.
+        we send a fresh prompt, so we replay the whole conversation each
+        turn. The model sees this as ONE giant user message — there's no
+        real assistant-role plumbing — so we explicitly label which lines
+        were "your previous reply" vs. "harness output" and end with a
+        directive about what the next reply must look like. Without this
+        framing the model often re-emits the same <tool_use> instead of
+        building on the result.
         """
-        out = []
-        for m in self.messages:
-            if m.role == "system":
-                out.append(m.content)
-            elif m.role == "user":
-                out.append(f"\n\nUser: {m.content}")
-            elif m.role == "assistant":
-                out.append(f"\n\nAssistant: {m.content}")
-            elif m.role == "tool":
-                out.append(f"\n\n{m.content}")
-        return "".join(out).strip()
+        sections: list[str] = []
+        # 1. System prompt (rules + tool list).
+        sys_msgs = [m for m in self.messages if m.role == "system"]
+        for m in sys_msgs:
+            sections.append(m.content)
+
+        # 2. Conversation so far, with explicit role narration.
+        non_sys = [m for m in self.messages if m.role != "system"]
+        if non_sys:
+            sections.append("\n\n=== CONVERSATION SO FAR ===\n")
+            for m in non_sys:
+                if m.role == "user":
+                    sections.append(f"\n[user said]\n{m.content}\n")
+                elif m.role == "assistant":
+                    sections.append(
+                        f"\n[your previous reply — already sent, the harness "
+                        f"saw this]\n{m.content}\n"
+                    )
+                elif m.role == "tool":
+                    sections.append(
+                        f"\n[harness output — this is the actual result of "
+                        f"your previous action; do not re-issue it]\n{m.content}\n"
+                    )
+
+        # 3. End with a directive describing what the NEXT reply must be.
+        # Different cue depending on whether the last non-system message
+        # was a tool result (mid-task) or a user request (start of task).
+        last_non_sys = non_sys[-1] if non_sys else None
+        if last_non_sys is not None and last_non_sys.role == "tool":
+            sections.append(
+                "\n=== NOW REPLY ===\n"
+                "Look at the harness output above. The action ran. Choose ONE:\n"
+                "  - If you have enough information, reply with ONLY "
+                "<final>your answer to the user's question</final>.\n"
+                "  - If you need another action, reply with ONLY a new "
+                "<tool_use>...</tool_use>.\n"
+                "Do not re-emit the action you already ran. Do not narrate. "
+                "Do not use Pages / Code Interpreter. Just the tag.\n"
+            )
+        elif last_non_sys is not None and last_non_sys.role == "user":
+            sections.append(
+                "\n=== NOW REPLY ===\n"
+                "Either request a harness action with "
+                "<tool_use>...</tool_use> (no preamble) or, if no action "
+                "is needed, answer in plain prose and wrap your conclusion "
+                "in <final>...</final>.\n"
+            )
+
+        return "".join(sections).strip()
 
     def estimated_tokens(self) -> int:
         return count_tokens(self.render_for_upstream())
