@@ -51,7 +51,7 @@ toggle, Conditional Access) applies automatically.
 ## Install (Windows)
 
 ```powershell
-# 1. Install Python 3.10+ from python.org
+# 1. Install Python 3.9+ from python.org (Microsoft Store works too)
 # 2. Clone and install
 git clone <this repo> copilot-cli-wrapper
 cd copilot-cli-wrapper
@@ -66,6 +66,44 @@ playwright install msedge
 If you don't have ripgrep (`rg`) installed, `grep` falls back to a Python
 walker — fine for small repos, slow on big ones. Install via
 `winget install BurntSushi.ripgrep.MSVC`.
+
+### Behind a corporate TLS proxy (Zscaler, Netskope, etc.)
+
+If `pip install` dies with `SSLCertVerificationError: unable to get local
+issuer certificate`, your corp proxy is re-signing HTTPS with a private root
+CA that Python doesn't trust. Three fixes, best to worst:
+
+**1. Use the Windows trust store (recommended).** IT has already installed
+the corporate root cert system-wide for Edge — make Python use it too:
+
+```powershell
+# Bootstrap pip-system-certs through the trusted-host workaround:
+pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org pip-system-certs
+# Now everything else works normally:
+pip install -e .
+playwright install msedge
+```
+
+**2. Point pip at the corporate CA bundle.** If your IT publishes the cert
+file (often `corp-root.pem` or `zscaler.pem` somewhere in `C:\ProgramData`):
+
+```powershell
+pip config set global.cert "C:\path\to\corp-bundle.pem"
+[Environment]::SetEnvironmentVariable("SSL_CERT_FILE", "C:\path\to\corp-bundle.pem", "User")
+[Environment]::SetEnvironmentVariable("REQUESTS_CA_BUNDLE", "C:\path\to\corp-bundle.pem", "User")
+```
+
+**3. Quick-and-dirty (no SSL verification).** Don't do this on a network
+you don't trust, but it gets you unblocked:
+
+```powershell
+pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org -e .
+```
+
+The `playwright install msedge` step downloads from `playwright.azureedge.net`,
+which the corp proxy also intercepts — same fix applies. Set
+`NODE_TLS_REJECT_UNAUTHORIZED=0` in the same shell as a last resort if
+Playwright's downloader chokes.
 
 ## Run
 

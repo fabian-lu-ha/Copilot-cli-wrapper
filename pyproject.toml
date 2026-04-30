@@ -7,7 +7,7 @@ name = "copilot-cli-wrapper"
 version = "0.1.0"
 description = "Claude-Code-style CLI that drives Microsoft 365 Copilot via a persistent Edge profile."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "fabian-lu-ha" }]
 dependencies = [
@@ -39,4 +39,4 @@ pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py39"
