@@ -16,6 +16,10 @@ sessions/
 edge-profile/
 *.session.jsonl
 
+# release artifacts
+*.zip
+*.tar.gz
+
 # IDE
 .vscode/
 .idea/
