@@ -71,6 +71,33 @@ def test_only_malformed_example_returns_none():
     assert p.pop_complete() is None
 
 
+def test_args_with_trailing_extra_brace_is_recovered():
+    """Models occasionally emit a stray '}' after the args object — usually
+    when echoing a SEARCH/REPLACE block that ends with '>>>>>>> REPLACE"}}'.
+    The brace-balanced extractor should recover the well-formed object."""
+    p = StreamingParser()
+    p.feed(
+        '<tool_use><name>edit_file</name><args>'
+        '{"path":"a.txt","edits":"x"}}</args></tool_use>'
+    )
+    ev = p.pop_complete()
+    assert isinstance(ev, ToolCall)
+    assert ev.name == "edit_file"
+    assert ev.args == {"path": "a.txt", "edits": "x"}
+
+
+def test_args_with_leading_prose_is_recovered():
+    p = StreamingParser()
+    p.feed(
+        '<tool_use><name>read_file</name><args>'
+        'here is the json: {"path":"a.txt"}'
+        '</args></tool_use>'
+    )
+    ev = p.pop_complete()
+    assert isinstance(ev, ToolCall)
+    assert ev.args == {"path": "a.txt"}
+
+
 def test_falls_through_to_final_when_only_malformed_tool_block():
     """If the only tool_use is a malformed example AND there's a real
     <final>, we should return the FinalAnswer."""

@@ -204,16 +204,33 @@ def register_fs_tools(registry: ToolRegistry, workdir: Path) -> None:
     registry.register(Tool(
         name="read_file",
         description=(
-            "Read a UTF-8 text file. Returns 'cat -n' formatted output (line numbers + tab + content). "
-            f"Default {DEFAULT_READ_LIMIT} lines; long lines truncated at {MAX_LINE_CHARS} chars; "
-            "256KB hard size gate. offset is 1-indexed."
+            "When to use: any time you need the contents of a file the user "
+            "mentions, or before editing a file (always read first). Returns "
+            "'cat -n' formatted output (line numbers + tab + content). Default "
+            f"{DEFAULT_READ_LIMIT} lines; long lines truncated at {MAX_LINE_CHARS} "
+            "chars; 256KB hard size gate; offset is 1-indexed for slicing big "
+            "files.\n"
+            'Example call:\n'
+            '  <tool_use><name>read_file</name>'
+            '<args>{"path":"src/main.py"}</args></tool_use>\n'
+            "Example with slice (lines 100-200):\n"
+            '  <tool_use><name>read_file</name>'
+            '<args>{"path":"big.log","offset":100,"limit":100}</args></tool_use>'
         ),
         args_schema='{"path": str, "offset"?: int (1-indexed), "limit"?: int}',
         handler=lambda a: _read_file(workdir, a),
     ))
     registry.register(Tool(
         name="write_file",
-        description="Overwrite a file with new content. Creates parent dirs.",
+        description=(
+            "When to use: creating a NEW file, or completely replacing an "
+            "existing file's contents. For small targeted changes to existing "
+            "files, prefer edit_file. Creates parent dirs automatically.\n"
+            "Example call:\n"
+            '  <tool_use><name>write_file</name>'
+            '<args>{"path":"hello.py","content":"print(\\"hi\\")\\n"}</args>'
+            "</tool_use>"
+        ),
         args_schema='{"path": str, "content": str}',
         handler=lambda a: _write_file(workdir, a),
         requires_approval=True,
@@ -221,27 +238,71 @@ def register_fs_tools(registry: ToolRegistry, workdir: Path) -> None:
     ))
     registry.register(Tool(
         name="edit_file",
-        description="Apply Aider-style SEARCH/REPLACE edits to an existing file.",
-        args_schema='{"path": str, "edits": str (SEARCH/REPLACE blocks)}',
+        description=(
+            "When to use: small, targeted edits to an EXISTING file (e.g. "
+            "fixing a typo, changing one line, renaming a variable). Always "
+            "read the file first so your SEARCH text matches byte-for-byte.\n"
+            "The 'edits' field is a string containing one or more "
+            "Aider-style SEARCH/REPLACE blocks. Format is EXACT — seven "
+            "less-than signs, the literal word SEARCH on its own line, the "
+            "old text, seven equals signs on their own line, the new text, "
+            "and seven greater-than signs followed by REPLACE. Whitespace "
+            "in the SEARCH section must match the file exactly.\n"
+            "Example call (fixing a typo):\n"
+            '  <tool_use><name>edit_file</name>'
+            '<args>{"path":"config.txt","edits":"<<<<<<< SEARCH\\n'
+            'tiemout=30\\n=======\\ntimeout=30\\n'
+            '>>>>>>> REPLACE"}</args></tool_use>\n'
+            "If the SEARCH block doesn't match the file exactly, the edit "
+            "fails and you'll get an ERROR back. In that case, re-read the "
+            "file to see the actual text and retry."
+        ),
+        args_schema='{"path": str, "edits": str (one or more <<<<<<< SEARCH / ======= / >>>>>>> REPLACE blocks)}',
         handler=lambda a: _edit_file(workdir, a),
         requires_approval=True,
         sensitive_args=("path",),
     ))
     registry.register(Tool(
         name="list_dir",
-        description="List files in a directory.",
+        description=(
+            "When to use: the user asks 'what files are in X' or you need to "
+            "explore a project before reading specific files. Returns one "
+            "entry per line, prefix 'f' (file) or 'd' (directory) followed "
+            "by size and name. Path is optional — defaults to the working "
+            "directory.\n"
+            "Example call:\n"
+            '  <tool_use><name>list_dir</name><args>{}</args></tool_use>\n'
+            "Example for a subdir:\n"
+            '  <tool_use><name>list_dir</name>'
+            '<args>{"path":"src"}</args></tool_use>'
+        ),
         args_schema='{"path"?: str}',
         handler=lambda a: _list_dir(workdir, a),
     ))
     registry.register(Tool(
         name="grep",
-        description="Search files for a regex pattern (uses ripgrep if available).",
+        description=(
+            "When to use: searching for a regex pattern across files (e.g. "
+            "'where is foo defined?', 'find all uses of bar'). Uses ripgrep "
+            "if available, falls back to a Python walker. Returns "
+            "file:line:matched-line for each hit.\n"
+            "Example call:\n"
+            '  <tool_use><name>grep</name>'
+            '<args>{"pattern":"def add","path":"."}</args></tool_use>'
+        ),
         args_schema='{"pattern": str, "path"?: str}',
         handler=lambda a: _grep(workdir, a),
     ))
     registry.register(Tool(
         name="glob",
-        description="Find files matching a glob pattern, sorted by mtime descending.",
+        description=(
+            "When to use: finding files by name pattern (e.g. all *.py files "
+            "in src). Returns matching file paths sorted by modification "
+            "time, newest first.\n"
+            "Example call:\n"
+            '  <tool_use><name>glob</name>'
+            '<args>{"pattern":"**/*.py"}</args></tool_use>'
+        ),
         args_schema='{"pattern": str (e.g. **/*.py), "path"?: str}',
         handler=lambda a: _glob(workdir, a),
     ))

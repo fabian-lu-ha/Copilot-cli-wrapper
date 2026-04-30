@@ -45,9 +45,15 @@ htmlcov/
 .probe-edge-profile/
 probe_artifacts/
 iter_artifacts/
+ralph_artifacts/
 probe_copilot.py
+probe_sidepane.py
+probe_pane_dom.py
 smoke_e2e.py
 smoke_models.py
 smoke_minimal.py
 smoke_agent.py
 iter_agent.py
+ralph_loop.py
+try_direct.py
+open_browser.py

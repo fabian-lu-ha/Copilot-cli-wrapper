@@ -107,15 +107,61 @@ def _parse_tool_block(block: str, raw: str) -> ToolCall:
         raise ValueError(f"Malformed tool_use block: {block!r}")
     name = name_m.group(1).strip()
     args_text = args_m.group(1).strip()
-    try:
-        args = json.loads(args_text) if args_text else {}
-    except json.JSONDecodeError as e:
-        # Try a lenient cleanup: strip code fences.
-        cleaned = re.sub(r"^```(?:json)?|```$", "", args_text, flags=re.MULTILINE).strip()
-        try:
-            args = json.loads(cleaned)
-        except json.JSONDecodeError:
-            raise ValueError(f"args is not valid JSON: {args_text!r} ({e})") from e
+    args = _parse_lenient_json_object(args_text) if args_text else {}
     if not isinstance(args, dict):
         raise ValueError(f"args must be a JSON object, got {type(args).__name__}")
     return ToolCall(name=name, args=args, raw=raw)
+
+
+def _parse_lenient_json_object(text: str) -> dict:
+    """Parse a string that should be a JSON object, tolerating common
+    streaming/model artifacts: surrounding ```json fences, leading prose,
+    trailing extra closing braces (the model sometimes echoes a brace from
+    an example), and whitespace.
+    """
+    s = text.strip()
+    # Strip ```json / ``` fences.
+    s = re.sub(r"^```(?:json)?\s*", "", s)
+    s = re.sub(r"\s*```$", "", s)
+    s = s.strip()
+    # Try direct parse first.
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    # Brace-balanced extraction: find the first '{', then walk forward
+    # respecting string escapes until we find the matching '}'. Anything
+    # before/after that range is dropped.
+    start = s.find("{")
+    if start < 0:
+        raise ValueError(f"args is not valid JSON: {text!r}")
+    depth = 0
+    in_str = False
+    escape = False
+    end = -1
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+    if end < 0:
+        raise ValueError(f"args is not valid JSON: {text!r}")
+    candidate = s[start:end]
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"args is not valid JSON: {text!r} ({e})") from e
